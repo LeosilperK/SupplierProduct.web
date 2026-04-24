@@ -4,6 +4,9 @@ import { FornecedorCNPJ } from "./components/FornecedorCNPJ";
 import { FornecedorLogin } from "./components/FornecedorLogin";
 import { FornecedorCadastro } from "./components/FornecedorCadastro";
 import { FornecedorDashboard } from "./components/FornecedorDashboard";
+import { ProdutoCadastro } from "./components/ProdutoCadastro";
+import { ProdutoEditar } from "./components/ProdutoEditar";
+import { ProdutoDetalhes } from "./components/ProdutoDetalhes";
 import { ColaboradorLogin } from "./components/ColaboradorLogin";
 
 export const router = createBrowserRouter([
@@ -26,6 +29,18 @@ export const router = createBrowserRouter([
   {
     path: "/fornecedor/dashboard",
     Component: FornecedorDashboard,
+  },
+  {
+    path: "/fornecedor/produto/novo",
+    Component: ProdutoCadastro,
+  },
+  {
+    path: "/fornecedor/produto/editar/:id",
+    Component: ProdutoEditar,
+  },
+  {
+    path: "/fornecedor/produto/detalhes/:id",
+    Component: ProdutoDetalhes,
   },
   {
     path: "/colaborador/login",

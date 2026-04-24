@@ -61,6 +61,110 @@ export interface CadastroFornecedorPayload {
   prop00123: string;
 }
 
+export interface ProdutoPreCadastroCorPayload {
+  codCor: string;
+  descCor: string;
+  origemCor: string;
+  corFabricante: string;
+  ncm: string;
+}
+
+export interface ProdutoPreCadastroPrecoPayload {
+  codigoTabelaPreco: string;
+  preco: number;
+}
+
+export interface ProdutoPreCadastroFotoPayload {
+  corLinx: string;
+  nomeArquivo: string;
+  caminhoArquivo: string;
+  base64Foto: string;
+  ordemFoto: number;
+}
+
+export interface ProdutoPreCadastroBarraPayload {
+  codigoBarra: string;
+  corProduto: string;
+  tamanho: string;
+  grade: string;
+}
+
+export interface ProdutoPreCadastroPayload {
+  descProduto: string;
+  descProdutoNf: string | null;
+  referFabricante: string | null;
+  ncm: string | null;
+  tipoProduto: string | null;
+  fabricante: string | null;
+  composicao: string | null;
+  grade: string | null;
+  linha: string | null;
+  griffe: string | null;
+  colecao: string | null;
+  obsFornecedor: string | null;
+  cores: ProdutoPreCadastroCorPayload[];
+  precos: ProdutoPreCadastroPrecoPayload[];
+  fotos: ProdutoPreCadastroFotoPayload[];
+  barras: ProdutoPreCadastroBarraPayload[];
+}
+
+export interface ProdutoCadastroResumo {
+  id: number;
+  descProduto: string;
+  descProdutoNf: string | null;
+  referFabricante: string | null;
+  ncm: string | null;
+  statusFluxo: number;
+  dataCadastro: string;
+}
+
+export interface ProdutoCadastroDetalhe {
+  id: number;
+  descProduto: string;
+  descProdutoNf: string | null;
+  referFabricante: string | null;
+  ncm: string | null;
+  tipoProduto: string | null;
+  fabricante: string | null;
+  composicao: string | null;
+  grade: string | null;
+  linha: string | null;
+  griffe: string | null;
+  colecao: string | null;
+  obsFornecedor: string | null;
+  statusFluxo: number;
+  dataCadastro: string;
+
+  cores: Array<{
+    id: number;
+    codCor: string | null;
+    descCor: string | null;
+    origemCor: string | null;
+    corFabricante: string | null;
+    ncm: string | null;
+  }>;
+  precos: Array<{
+    id: number;
+    codigoTabelaPreco: string | null;
+    preco: number;
+  }>;
+  fotos: Array<{
+    id: number;
+    corLinx: string | null;
+    nomeArquivo: string | null;
+    caminhoArquivo: string | null;
+    base64Foto: string | null;
+    ordemFoto: number;
+  }>;
+  barras: Array<{
+    id: number;
+    codigoBarra: string | null;
+    corProduto: string | null;
+    tamanho: string | null;
+    grade: string | null;
+  }>;
+}
+
 interface ApiErrorPayload {
   mensagem?: string;
 }
@@ -89,13 +193,23 @@ export class ApiError extends Error {
   }
 }
 
+function normalizeText(value: string) {
+  return value.trim();
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  const hasBody = init?.body != null;
+  const isFormData =
+    typeof FormData !== 'undefined' && init?.body instanceof FormData;
+
+  if (hasBody && !isFormData && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
     ...init,
+    headers,
   });
 
   if (!response.ok) {
@@ -134,6 +248,22 @@ export async function cadastrarFornecedor(payload: CadastroFornecedorPayload) {
       ...payload,
       cgcCpf: sanitizeDocument(payload.cgcCpf),
       cep: payload.cep.replace(/\D/g, ''),
+      nomeCliFor: normalizeText(payload.nomeCliFor),
+      razaoSocial: normalizeText(payload.razaoSocial),
+      rgIe: normalizeText(payload.rgIe),
+      endereco: normalizeText(payload.endereco),
+      cidade: normalizeText(payload.cidade),
+      bairro: normalizeText(payload.bairro),
+      uf: normalizeText(payload.uf).toUpperCase(),
+      pais: normalizeText(payload.pais),
+      email: normalizeText(payload.email),
+      numero: normalizeText(payload.numero),
+      complemento: normalizeText(payload.complemento),
+      tipo: normalizeText(payload.tipo),
+      centroCusto: normalizeText(payload.centroCusto),
+      condicaoPgto: normalizeText(payload.condicaoPgto),
+      moeda: normalizeText(payload.moeda),
+      ctbContaContabil: normalizeText(payload.ctbContaContabil),
     }),
   });
 }
@@ -161,6 +291,51 @@ export async function loginFornecedor(payload: { login: string; senha: string })
 
 export async function getUsuarioAutenticado(token: string) {
   return request<UsuarioAutenticado>('/usuario/me', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function criarPreCadastroProduto(token: string, payload: ProdutoPreCadastroPayload) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>('/produtos/pre-cadastro', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function atualizarPreCadastroProduto(token: string, id: number, payload: ProdutoPreCadastroPayload) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/pre-cadastro/${id}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listarMeusCadastrosProdutos(token: string) {
+  return request<ProdutoCadastroResumo[]>('/produtos/meus-cadastros', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function obterDetalheProduto(token: string, id: number) {
+  return request<ProdutoCadastroDetalhe>(`/produtos/${id}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function enviarProdutoParaCompras(token: string, id: number) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/enviar-para-compras`, {
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
     },

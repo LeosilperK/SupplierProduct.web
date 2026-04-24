@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Layout } from './Layout';
 import { ArrowLeft, Building2, FileText, MapPin, Phone, DollarSign, Package } from 'lucide-react';
 import { toast } from 'sonner';
+import { CepError, pesquisacep } from '../lib/viacep';
 import {
   cadastrarFornecedor,
   criarAcessoFornecedor,
@@ -17,6 +18,7 @@ interface FornecedorFormData {
   cgcCpf: string;
   pjPf: number;
   rgIe: string;
+  inscricaoMunicipal: string;
   cep: string;
   endereco: string;
   cidade: string;
@@ -59,6 +61,7 @@ export function FornecedorCadastro() {
     cgcCpf: cnpjFromState,
     pjPf: 0,
     rgIe: '',
+    inscricaoMunicipal: '',
     cep: '',
     endereco: '',
     cidade: '',
@@ -90,6 +93,60 @@ export function FornecedorCadastro() {
     confirmarSenha: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCepLoading, setIsCepLoading] = useState(false);
+  const cepNumbers = useMemo(() => formData.cep.replace(/\D/g, ''), [formData.cep]);
+
+  const canLookupCep = useMemo(() => cepNumbers.length === 8, [cepNumbers.length]);
+
+  useEffect(() => {
+    if (!canLookupCep) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    const lookupCep = async () => {
+      setIsCepLoading(true);
+
+      try {
+        const result = await pesquisacep(cepNumbers);
+
+        if (isCancelled || !result) {
+          return;
+        }
+
+        setFormData((current) => ({
+          ...current,
+          endereco: result.endereco || current.endereco,
+          bairro: result.bairro || current.bairro,
+          cidade: result.cidade || current.cidade,
+          uf: result.estado || current.uf,
+          pais: current.pais || 'Brasil',
+        }));
+      } catch (error) {
+        if (!isCancelled) {
+          toast.error('Não foi possível consultar o CEP.', {
+            description:
+              error instanceof CepError
+                ? error.message
+                : error instanceof Error
+                  ? error.message
+                  : 'Tente novamente em instantes.',
+          });
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsCepLoading(false);
+        }
+      }
+    };
+
+    void lookupCep();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [canLookupCep, cepNumbers]);
 
   const formatCEP = (value: string) => {
     const numbers = value.replace(/\D/g, '');
@@ -102,6 +159,8 @@ export function FornecedorCadastro() {
   const handleChange = (field: keyof FornecedorFormData, value: string | number | boolean | null) => {
     if (field === 'cep' && typeof value === 'string') {
       setFormData({ ...formData, [field]: formatCEP(value) });
+    } else if (field === 'uf' && typeof value === 'string') {
+      setFormData({ ...formData, [field]: value.toUpperCase().trim() });
     } else {
       setFormData({ ...formData, [field]: value });
     }
@@ -293,6 +352,20 @@ export function FornecedorCadastro() {
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
                 </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Inscrição Municipal
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.inscricaoMunicipal}
+                    onChange={(e) => handleChange('inscricaoMunicipal', e.target.value)}
+                    placeholder="Digite a inscrição municipal"
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
               </div>
             </div>
 
@@ -318,6 +391,9 @@ export function FornecedorCadastro() {
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
+                  <p className="text-white/60 text-sm mt-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                    {isCepLoading ? 'Consultando CEP...' : 'Ao preencher o CEP, cidade/UF são validados automaticamente.'}
+                  </p>
                 </div>
 
                 <div className="md:col-span-2">
