@@ -8,6 +8,9 @@ import { ProdutoCadastro } from "./components/ProdutoCadastro";
 import { ProdutoEditar } from "./components/ProdutoEditar";
 import { ProdutoDetalhes } from "./components/ProdutoDetalhes";
 import { ColaboradorLogin } from "./components/ColaboradorLogin";
+import { ColaboradorAuth } from "./components/ColaboradorAuth";
+import { ColaboradorDashboardFiscal } from "./components/ColaboradorDashboardFiscal";
+import { ColaboradorDashboardCompras } from "./components/ColaboradorDashboardCompras";
 
 export const router = createBrowserRouter([
   {
@@ -45,5 +48,17 @@ export const router = createBrowserRouter([
   {
     path: "/colaborador/login",
     Component: ColaboradorLogin,
+  },
+  {
+    path: "/colaborador/login/auth",
+    Component: ColaboradorAuth,
+  },
+  {
+    path: "/colaborador/fiscal/dashboard",
+    Component: ColaboradorDashboardFiscal,
+  },
+  {
+    path: "/colaborador/compras/dashboard",
+    Component: ColaboradorDashboardCompras,
   },
 ]);

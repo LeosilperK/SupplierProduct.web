@@ -27,6 +27,68 @@ export interface UsuarioAutenticado {
   id: string;
 }
 
+export interface ColaboradorLoginResponse {
+  token: string;
+  login: string;
+  nome?: string | null;
+  expiracao?: string | null;
+}
+
+export interface ProdutoPendenteCompras {
+  id: number;
+  nomeFornecedor: string;
+  cgcCpfFornecedor: string;
+  descProduto: string;
+  descProdutoNf: string | null;
+  referFabricante: string | null;
+  ncm: string | null;
+  statusFluxo: number;
+  dataCadastro: string;
+}
+
+export interface ProdutoPendenteFiscal extends ProdutoPendenteCompras {
+  cest: string | null;
+}
+
+export interface ProdutoAnaliseComprasPayload {
+  grupoProduto?: string | null;
+  subgrupoProduto?: string | null;
+  codCategoria?: string | null;
+  codSubcategoria?: string | null;
+  unidade?: string | null;
+  cest?: string | null;
+  tipoStatusProduto?: string | null;
+  sexoTipo?: string | null;
+  contaContabil?: string | null;
+  contaContabilCompra?: string | null;
+  contaContabilVenda?: string | null;
+  contaContabilDevCompra?: string | null;
+  contaContabilDevVenda?: string | null;
+  indicadorCfop?: string | null;
+  continuidade?: string | null;
+  periodoPcp?: string | null;
+  redeLojas?: string | null;
+  codProdutoSolucao?: string | null;
+  sujeitoSubstituicaoTributaria?: string | null;
+  codProdutoSegmento?: string | null;
+  obsCompras?: string | null;
+}
+
+export interface ProdutoAnaliseFiscalPayload {
+  ncm?: string | null;
+  cest?: string | null;
+  tributOrigem?: string | null;
+  tributIcms?: string | null;
+  tipoItemSped?: string | null;
+  idExcecaoGrupo?: string | null;
+  classificacaoFiscalFinal?: string | null;
+  obsFiscal?: string | null;
+}
+
+export interface ReprovarProdutoPayload {
+  motivo: string;
+}
+
 export interface CadastroFornecedorPayload {
   nomeCliFor: string;
   razaoSocial: string;
@@ -59,6 +121,15 @@ export interface CadastroFornecedorPayload {
   prop00014: string;
   prop00035: string;
   prop00123: string;
+}
+
+export interface FornecedorCadastroCompleto extends CadastroFornecedorPayload {
+  id?: number | string | null;
+  codigoFornecedor?: string | null;
+  cliFor?: string | null;
+  nomeFornecedor?: string | null;
+  dataCadastro?: string | null;
+  inativo?: boolean | null;
 }
 
 export interface ProdutoPreCadastroCorPayload {
@@ -268,6 +339,13 @@ export async function cadastrarFornecedor(payload: CadastroFornecedorPayload) {
   });
 }
 
+export async function getFornecedorCadastroCompletoByCgcCpf(cgcCpf: string) {
+  const document = sanitizeDocument(cgcCpf);
+  // Contrato esperado: endpoint retorna o cadastro completo (mesmos campos do POST).
+  // Ajuste o path se sua API expuser por outro recurso.
+  return request<FornecedorCadastroCompleto>(`/fornecedores/cadastro-completo/${document}`);
+}
+
 export async function criarAcessoFornecedor(payload: {
   cgcCpf: string;
   login: string;
@@ -289,8 +367,100 @@ export async function loginFornecedor(payload: { login: string; senha: string })
   });
 }
 
+export async function loginColaborador(payload: { login: string; senha: string }) {
+  // Endpoint esperado na API: autenticação AD/Windows para colaborador.
+  // Ajuste o path caso sua API use outro contrato.
+  return request<ColaboradorLoginResponse>('/auth/colaborador/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getUsuarioAutenticado(token: string) {
   return request<UsuarioAutenticado>('/usuario/me', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function listarPendentesCompras(token: string) {
+  return request<ProdutoPendenteCompras[]>('/produtos/pendentes-compras', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function listarPendentesFiscal(token: string) {
+  return request<ProdutoPendenteFiscal[]>('/produtos/pendentes-fiscal', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function iniciarAnaliseCompras(token: string, id: number, payload: ProdutoAnaliseComprasPayload) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/iniciar-analise-compras`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function iniciarAnaliseFiscal(token: string, id: number, payload: ProdutoAnaliseFiscalPayload) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/iniciar-analise-fiscal`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function aprovarCompras(token: string, id: number) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/aprovar-compras`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function reprovarCompras(token: string, id: number, payload: ReprovarProdutoPayload) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/reprovar-compras`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function aprovarFiscal(token: string, id: number) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/aprovar-fiscal`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function reprovarFiscal(token: string, id: number, payload: ReprovarProdutoPayload) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/reprovar-fiscal`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function integrarProdutoErp(token: string, id: number) {
+  return request<{ mensagem: string; id: number; statusFluxo: number }>(`/produtos/${id}/integrar-erp`, {
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
     },

@@ -1,27 +1,19 @@
-import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Layout } from './Layout';
-import { ArrowLeft, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, Building, Calculator } from 'lucide-react';
 
 export function ColaboradorLogin() {
   const navigate = useNavigate();
-  const [showPassword, setShowPassword] = useState(false);
-  const [formData, setFormData] = useState({
-    username: '',
-    password: '',
-  });
 
-  const handleLogin = () => {
-    // Simulate AD authentication
-    console.log('Login attempt:', formData);
-    // In a real app, this would authenticate against Active Directory
+  const handleSelectDepartment = (department: 'fiscal' | 'compras') => {
+    navigate('/colaborador/login/auth', {
+      state: { department },
+    });
   };
-
-  const isFormValid = formData.username && formData.password;
 
   return (
     <Layout>
-      <div className="w-full max-w-2xl">
+      <div className="w-full max-w-4xl">
         <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-12 border-2 border-white/20 shadow-2xl animate-[fadeIn_0.6s_ease-out]">
           {/* Header */}
           <div className="text-center mb-12">
@@ -30,73 +22,81 @@ export function ColaboradorLogin() {
             </h1>
             <div className="w-24 h-1 bg-white/40 mx-auto rounded-full mb-6"></div>
             <p className="text-white/80 text-lg" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-              Faça login com sua conta Active Directory
+              Autenticação via Windows 
             </p>
           </div>
 
-          {/* Form */}
-          <div className="space-y-6">
-            <div>
-              <label className="block text-white/90 text-lg mb-3" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                Usuário (AD)
-              </label>
-              <input
-                type="text"
-                value={formData.username}
-                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                placeholder="usuario@dominio"
-                className="w-full px-5 py-4 bg-white/20 backdrop-blur-sm border-2 border-white/30 rounded-xl text-white text-lg placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                style={{ fontFamily: 'Outfit, sans-serif' }}
-              />
-            </div>
+          {/* Department Selection */}
+          <div className="mb-8">
+            <h2 className="text-2xl text-white/95 mb-6 text-center" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 500 }}>
+              Selecione seu departamento
+            </h2>
 
-            <div>
-              <label className="block text-white/90 text-lg mb-3" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                Senha
-              </label>
-              <div className="relative">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  placeholder="••••••••"
-                  className="w-full px-5 py-4 pr-14 bg-white/20 backdrop-blur-sm border-2 border-white/30 rounded-xl text-white text-lg placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                  style={{ fontFamily: 'Outfit, sans-serif' }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white/60 hover:text-white transition-colors duration-200"
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-            </div>
+            <div className="grid md:grid-cols-2 gap-6">
+              <button
+                onClick={() => handleSelectDepartment('fiscal')}
+                className="group relative bg-white/10 backdrop-blur-md rounded-2xl p-10 border-2 border-white/20 hover:border-white/40 transition-all duration-500 hover:scale-105 hover:bg-white/15 overflow-hidden"
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
 
-            <button
-              onClick={handleLogin}
-              disabled={!isFormValid}
-              className="w-full bg-white text-[#ca0404] py-5 px-8 rounded-xl text-xl font-semibold hover:bg-white/90 disabled:bg-white/20 disabled:text-white/40 disabled:cursor-not-allowed transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] mt-8"
-              style={{ fontFamily: 'Outfit, sans-serif' }}
-            >
-              Entrar
-            </button>
+                <div className="relative z-10">
+                  <div className="flex justify-center mb-6">
+                    <div className="bg-white/20 backdrop-blur-sm rounded-full p-6 group-hover:bg-white/30 transition-all duration-300">
+                      <Calculator className="w-14 h-14 text-white" strokeWidth={1.5} />
+                    </div>
+                  </div>
+                  <h3 className="text-3xl font-bold text-white mb-4" style={{ fontFamily: 'Playfair Display, serif' }}>
+                    Fiscal
+                  </h3>
+                  <p className="text-lg text-white/80 mb-6" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                    Análise e aprovação fiscal de produtos
+                  </p>
+                  <div className="inline-flex items-center text-white font-medium" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                    Selecionar
+                    <svg className="w-5 h-5 ml-2 group-hover:translate-x-2 transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </div>
+              </button>
 
-            <div className="text-center mt-6">
-              <button className="text-white/80 hover:text-white text-base transition-colors duration-300" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                Esqueceu a senha?
+              <button
+                onClick={() => handleSelectDepartment('compras')}
+                className="group relative bg-white/10 backdrop-blur-md rounded-2xl p-10 border-2 border-white/20 hover:border-white/40 transition-all duration-500 hover:scale-105 hover:bg-white/15 overflow-hidden"
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+
+                <div className="relative z-10">
+                  <div className="flex justify-center mb-6">
+                    <div className="bg-white/20 backdrop-blur-sm rounded-full p-6 group-hover:bg-white/30 transition-all duration-300">
+                      <Building className="w-14 h-14 text-white" strokeWidth={1.5} />
+                    </div>
+                  </div>
+                  <h3 className="text-3xl font-bold text-white mb-4" style={{ fontFamily: 'Playfair Display, serif' }}>
+                    Compras
+                  </h3>
+                  <p className="text-lg text-white/80 mb-6" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                    Análise e aprovação comercial de produtos
+                  </p>
+                  <div className="inline-flex items-center text-white font-medium" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                    Selecionar
+                    <svg className="w-5 h-5 ml-2 group-hover:translate-x-2 transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </div>
               </button>
             </div>
-
-            <button
-              onClick={() => navigate('/')}
-              className="w-full flex items-center justify-center text-white/80 hover:text-white text-lg transition-colors duration-300 py-4 mt-4"
-              style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}
-            >
-              <ArrowLeft className="w-5 h-5 mr-2" />
-              Não é colaborador? Voltar
-            </button>
           </div>
+
+          <button
+            onClick={() => navigate('/')}
+            className="w-full flex items-center justify-center text-white/80 hover:text-white text-lg transition-colors duration-300 py-4 mt-6"
+            style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}
+          >
+            <ArrowLeft className="w-5 h-5 mr-2" />
+            Não é colaborador? Voltar
+          </button>
         </div>
       </div>
     </Layout>
