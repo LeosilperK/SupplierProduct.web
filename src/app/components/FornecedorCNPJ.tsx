@@ -10,8 +10,18 @@ export function FornecedorCNPJ() {
   const [cnpj, setCnpj] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const formatCNPJ = (value: string) => {
+  const formatDocument = (value: string) => {
     const numbers = value.replace(/\D/g, '');
+
+    // CPF
+    if (numbers.length <= 11) {
+      return numbers
+        .replace(/^(\d{3})(\d)/, '$1.$2')
+        .replace(/^(\d{3})\.(\d{3})(\d)/, '$1.$2.$3')
+        .replace(/\.(\d{3})(\d)/, '.$1-$2');
+    }
+
+    // CNPJ (até 14)
     if (numbers.length <= 14) {
       return numbers
         .replace(/^(\d{2})(\d)/, '$1.$2')
@@ -23,7 +33,7 @@ export function FornecedorCNPJ() {
   };
 
   const handleCNPJChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setCnpj(formatCNPJ(e.target.value));
+    setCnpj(formatDocument(e.target.value));
   };
 
   const handleContinue = async () => {
@@ -33,6 +43,21 @@ export function FornecedorCNPJ() {
     try {
       const fornecedorData = await getFornecedorByCgcCpf(numbers);
 
+      const fornecedorDocLen = sanitizeDocument(fornecedorData?.cgcCpf ?? '').length;
+      const isCpf = numbers.length === 11 || fornecedorDocLen === 11;
+
+      // Fluxo solicitado: quando for CPF (cadastro fiscal), direciona primeiro para criação de acesso (login/senha).
+      if (isCpf) {
+        navigate('/fornecedor/acesso', {
+          state: {
+            fornecedorData,
+            cgcCpf: numbers,
+          },
+        });
+        return;
+      }
+
+      // Caso seja CNPJ, segue para autenticação (login/senha).
       navigate('/fornecedor/login', {
         state: {
           fornecedorData,
@@ -41,6 +66,14 @@ export function FornecedorCNPJ() {
       });
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
+        // CPF: o fornecedor só deve seguir para primeiro acesso após integração/aprovação no ERP.
+        if (numbers.length === 11) {
+          toast.info('Aguardando aprovação', {
+            description: 'Seu perfil ainda não foi integrado/aprovado pela equipe fiscal. Tente novamente mais tarde.',
+          });
+          return;
+        }
+
         navigate('/fornecedor/cadastro', { state: { cnpj: numbers } });
         return;
       }
@@ -52,6 +85,9 @@ export function FornecedorCNPJ() {
       setIsLoading(false);
     }
   };
+
+  const docLen = cnpj.replace(/\D/g, '').length;
+  const isDocValid = docLen === 11 || docLen === 14;
 
   return (
     <Layout>
@@ -69,14 +105,14 @@ export function FornecedorCNPJ() {
           <div className="space-y-8">
             <div>
               <label className="block text-white/90 text-xl mb-4" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                Digite seu CNPJ para continuar
+                Digite seu CPF ou CNPJ para continuar
               </label>
               <input
                 type="text"
                 value={cnpj}
                 onChange={handleCNPJChange}
-                placeholder="00.000.000/0000-00"
-                maxLength={18}
+                placeholder="000.000.000-00 ou 00.000.000/0000-00"
+                maxLength={18} // CPF (14) ou CNPJ (18)
                 disabled={isLoading}
                 className="w-full px-6 py-5 bg-white/20 backdrop-blur-sm border-2 border-white/30 rounded-xl text-white text-2xl placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                 style={{ fontFamily: 'Outfit, sans-serif' }}
@@ -85,7 +121,7 @@ export function FornecedorCNPJ() {
 
             <button
               onClick={handleContinue}
-              disabled={cnpj.replace(/\D/g, '').length !== 14 || isLoading}
+              disabled={!isDocValid || isLoading}
               className="w-full bg-white text-[#ca0404] py-5 px-8 rounded-xl text-xl font-semibold hover:bg-white/90 disabled:bg-white/20 disabled:text-white/40 disabled:cursor-not-allowed transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]"
               style={{ fontFamily: 'Outfit, sans-serif' }}
             >

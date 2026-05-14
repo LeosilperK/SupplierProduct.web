@@ -1,59 +1,78 @@
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Layout } from './Layout';
-import { ArrowLeft, Eye, EyeOff, Calculator, Building, Shield } from 'lucide-react';
+import { ArrowLeft, Calculator, Building, Shield } from 'lucide-react';
 import { toast } from 'sonner';
+import { ApiError, getUsuarioInternoMe, getUsuarioInternoPerfil } from '../lib/supplier-api';
+import { saveColaboradorSession } from '../lib/colaborador-auth-storage';
 
 export function ColaboradorAuth() {
   const navigate = useNavigate();
   const location = useLocation();
   const department = location.state?.department as 'fiscal' | 'compras' | undefined;
 
-  const [showPassword, setShowPassword] = useState(false);
-  const [formData, setFormData] = useState({
-    username: '',
-    password: '',
-  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!department) {
     navigate('/colaborador/login');
     return null;
   }
 
-  const handleLogin = () => {
-    if (!formData.username || !formData.password) {
-      toast.error('Campos obrigatórios', {
-        description: 'Preencha usuário e senha.',
-        duration: 2000,
-      });
-      return;
-    }
+  const handleLogin = async () => {
+    setIsSubmitting(true);
 
-    toast.success('Autenticação Windows realizada!', {
-      description: `Bem-vindo ao departamento ${department === 'fiscal' ? 'Fiscal' : 'Compras'}`,
-      duration: 2000,
-    });
-
-    setTimeout(() => {
-      if (department === 'fiscal') {
-        navigate('/colaborador/fiscal/dashboard', {
-          state: {
-            userName: formData.username,
-            department: 'Fiscal',
-          },
-        });
-      } else {
-        navigate('/colaborador/compras/dashboard', {
-          state: {
-            userName: formData.username,
-            department: 'Compras',
-          },
-        });
+    try {
+      const me = await getUsuarioInternoMe();
+      if (!me.autenticado) {
+        throw new ApiError('Usuário Windows não autenticado no navegador.', 401);
       }
-    }, 2000);
-  };
 
-  const isFormValid = Boolean(formData.username && formData.password);
+      const perfil = await getUsuarioInternoPerfil();
+      const perfisUpper = (perfil.perfis ?? []).map((p) => p?.toString().toUpperCase());
+
+      const requiredProfile = department === 'fiscal' ? 'FISCAL' : 'COMPRAS';
+      if (!perfisUpper.includes(requiredProfile)) {
+        throw new ApiError(`Você não tem perfil ${requiredProfile} para acessar este módulo.`, 403);
+      }
+
+      saveColaboradorSession({
+        token: 'windows',
+        login: perfil.usuario,
+        nome: me.nome,
+        departamento: department,
+      });
+
+      toast.success('Autenticação Windows validada!', {
+        description: `Bem-vindo ao departamento ${department === 'fiscal' ? 'Fiscal' : 'Compras'}`,
+        duration: 1500,
+      });
+
+      setTimeout(() => {
+        if (department === 'fiscal') {
+          navigate('/colaborador/fiscal/dashboard', {
+            state: {
+              userName: me.nome ?? perfil.usuario,
+              department: 'Fiscal',
+            },
+          });
+        } else {
+          navigate('/colaborador/compras/dashboard', {
+            state: {
+              userName: me.nome ?? perfil.usuario,
+              department: 'Compras',
+            },
+          });
+        }
+      }, 1500);
+    } catch (error) {
+      toast.error('Falha ao autenticar com Windows', {
+        description: error instanceof ApiError || error instanceof Error ? error.message : 'Tente novamente.',
+        duration: 3500,
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const departmentInfo = {
     fiscal: {
@@ -98,61 +117,22 @@ export function ColaboradorAuth() {
             <Shield className="w-5 h-5 text-white/80 mt-0.5 flex-shrink-0" />
             <div>
               <p className="text-white/90 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                Use suas credenciais do Windows
+                Acesso via Windows (Negotiate)
               </p>
               <p className="text-white/60 text-xs mt-1" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                Mesmo usuário e senha da rede corporativa
+                O navegador valida automaticamente seu usuário de rede.
               </p>
             </div>
           </div>
 
           <div className="space-y-6">
-            <div>
-              <label className="block text-white/90 text-lg mb-3" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                Usuário (Windows)
-              </label>
-              <input
-                type="text"
-                value={formData.username}
-                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                placeholder="usuario@dominio"
-                className="w-full px-5 py-4 bg-white/20 backdrop-blur-sm border-2 border-white/30 rounded-xl text-white text-lg placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                style={{ fontFamily: 'Outfit, sans-serif' }}
-                onKeyPress={(e) => e.key === 'Enter' && isFormValid && handleLogin()}
-              />
-            </div>
-
-            <div>
-              <label className="block text-white/90 text-lg mb-3" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                Senha
-              </label>
-              <div className="relative">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  placeholder="••••••••"
-                  className="w-full px-5 py-4 pr-14 bg-white/20 backdrop-blur-sm border-2 border-white/30 rounded-xl text-white text-lg placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                  style={{ fontFamily: 'Outfit, sans-serif' }}
-                  onKeyPress={(e) => e.key === 'Enter' && isFormValid && handleLogin()}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white/60 hover:text-white transition-colors duration-200"
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-            </div>
-
             <button
               onClick={handleLogin}
-              disabled={!isFormValid}
+              disabled={isSubmitting}
               className="w-full bg-white text-[#ca0404] py-5 px-8 rounded-xl text-xl font-semibold hover:bg-white/90 disabled:bg-white/20 disabled:text-white/40 disabled:cursor-not-allowed transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] mt-8"
               style={{ fontFamily: 'Outfit, sans-serif' }}
             >
-              Entrar
+              {isSubmitting ? 'Validando...' : 'Entrar'}
             </button>
 
             <div className="text-center mt-6">

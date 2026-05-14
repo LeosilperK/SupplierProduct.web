@@ -1,5 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
+import { toast } from 'sonner';
 import { X, Package, FileText, Palette, DollarSign, Camera, Barcode, CheckCircle, XCircle, ClipboardList } from 'lucide-react';
+import {
+  ApiError,
+  DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS,
+  iniciarAnaliseCompras,
+  iniciarAnaliseFiscal,
+  comprasAnaliseDraftStorageKey,
+  fiscalAnaliseDraftStorageKey,
+  ncmPrincipalDoProduto,
+  type ProdutoAnaliseComprasPayload,
+  type ProdutoAnaliseFiscalPayload,
+} from '../lib/supplier-api';
+import { AnaliseComprasFields } from './AnaliseComprasFields';
+import { normalizeIndicadorCfopForPersist } from '../lib/erp-produto-integracao';
 
 interface Cor {
   codCor: string;
@@ -50,19 +64,32 @@ interface Product {
   precos?: Preco[];
   fotos?: Foto[];
   barras?: Barra[];
+  /** Preenchidos pelo GET interno quando a API os devolver; senão o rascunho em sessionStorage cobre a análise fiscal. */
+  cest?: string;
+  tributOrigem?: string;
+  tributIcms?: string;
+  idExcecaoGrupo?: string;
+  classificacaoFiscalFinal?: string;
+  caracteristicaContabil?: string;
+  enviaLojaVarejo?: boolean;
+  enviaVarejoInternet?: boolean;
+  variaPrecoPorCor?: boolean;
+  obsFiscal?: string;
 }
 
 interface ProdutoDetalhesModalProps {
   product: Product;
   isOpen: boolean;
   onClose: () => void;
-  onAprovar?: () => void;
-  onReprovar?: () => void;
-  onIniciarAnalise?: () => void;
+  onAprovar?: () => void | Promise<void>;
+  onReprovar?: () => void | Promise<void>;
+  /** Chamado após salvar análise (compras ou fiscal) com sucesso — ex.: recarregar lista. */
+  onMutationSuccess?: () => void;
   showActions?: boolean;
   departamento?: 'fiscal' | 'compras';
 }
 
+/** Alinhado ao enum StatusProdutoCadastro (backend). */
 const STATUS_FLUXO: { [key: number]: string } = {
   1: 'Pré-Cadastro Fornecedor',
   2: 'Aguardando Compras',
@@ -100,26 +127,271 @@ const getStatusColor = (status: number) => {
   }
 };
 
+/** Limites alinhados ao AppDbContext (PRODUTO_CADASTRO) — evita 500 por truncamento no SQL Server. */
+function buildComprasPayload(form: Record<string, string>): ProdutoAnaliseComprasPayload {
+  const t = (s: string, max: number) => {
+    const x = s.trim();
+    if (!x) return null;
+    return x.length <= max ? x : x.slice(0, max);
+  };
+  return {
+    grupoProduto: t(form.grupoProduto, 50),
+    subgrupoProduto: t(form.subgrupoProduto, 50),
+    codCategoria: t(form.codCategoria, 50),
+    codSubcategoria: t(form.codSubcategoria, 50),
+    tipoProduto: t(form.tipoProduto, 50),
+    grade: t(form.grade, 50),
+    linha: t(form.linha, 50),
+    griffe: t(form.griffe, 50),
+    colecao: t(form.colecao, 50),
+    unidade: t(form.unidade, 20),
+    tipoStatusProduto: t(form.tipoStatusProduto, 50),
+    sexoTipo: t(form.sexoTipo, 20),
+    tipoItemSped: t(form.tipoItemSped, 20),
+    indicadorCfop: t(normalizeIndicadorCfopForPersist(form.indicadorCfop) ?? form.indicadorCfop, 20),
+    periodoPcp: t(form.periodoPcp, 20),
+    redeLojas: t(form.redeLojas, 20),
+    codProdutoSolucao: null,
+    codProdutoSegmento: t(form.codProdutoSegmento, 50),
+    obsCompras: t(form.obsCompras, 1000),
+    contaContabil:
+      t(form.contaContabil, 50) ?? DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabil,
+    contaContabilCompra:
+      t(form.contaContabilCompra, 50) ?? DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilCompra,
+    contaContabilVenda:
+      t(form.contaContabilVenda, 50) ?? DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilVenda,
+    contaContabilDevCompra:
+      t(form.contaContabilDevCompra, 50) ?? DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilDevCompra,
+    contaContabilDevVenda:
+      t(form.contaContabilDevVenda, 50) ?? DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilDevVenda,
+  };
+}
+
+/** Mesma regra de `ProdutosController.AprovarCompras` (sem alterar a API). */
+function mensagemCamposComprasObrigatorios(form: Record<string, string>): string | null {
+  const r = (s: string) => s.trim();
+  const faltando: string[] = [];
+  if (!r(form.grupoProduto)) faltando.push('Grupo');
+  if (!r(form.subgrupoProduto)) faltando.push('Subgrupo');
+  if (!r(form.codCategoria)) faltando.push('Categoria');
+  if (!r(form.codSubcategoria)) faltando.push('Subcategoria');
+  if (!r(form.unidade)) faltando.push('Unidade');
+  if (!r(form.tipoProduto)) faltando.push('Tipo de produto');
+  if (!r(form.grade)) faltando.push('Grade');
+  if (!r(form.linha)) faltando.push('Linha');
+  if (!r(form.griffe)) faltando.push('Griffe');
+  if (!r(form.colecao)) faltando.push('Coleção');
+  if (!r(form.tipoItemSped)) faltando.push('Tipo item SPED');
+  if (faltando.length === 0) return null;
+  return `Preencha antes de aprovar: ${faltando.join(', ')}.`;
+}
+
+type ComprasFormStateShape = {
+  grupoProduto: string;
+  subgrupoProduto: string;
+  codCategoria: string;
+  codSubcategoria: string;
+  tipoProduto: string;
+  grade: string;
+  linha: string;
+  griffe: string;
+  colecao: string;
+  unidade: string;
+  tipoStatusProduto: string;
+  sexoTipo: string;
+  tipoItemSped: string;
+  indicadorCfop: string;
+  periodoPcp: string;
+  redeLojas: string;
+  codProdutoSegmento: string;
+  obsCompras: string;
+  contaContabil: string;
+  contaContabilCompra: string;
+  contaContabilVenda: string;
+  contaContabilDevCompra: string;
+  contaContabilDevVenda: string;
+};
+
+const COMPRAS_FORM_KEYS: (keyof ComprasFormStateShape)[] = [
+  'grupoProduto',
+  'subgrupoProduto',
+  'codCategoria',
+  'codSubcategoria',
+  'tipoProduto',
+  'grade',
+  'linha',
+  'griffe',
+  'colecao',
+  'unidade',
+  'tipoStatusProduto',
+  'sexoTipo',
+  'tipoItemSped',
+  'indicadorCfop',
+  'periodoPcp',
+  'redeLojas',
+  'codProdutoSegmento',
+  'obsCompras',
+  'contaContabil',
+  'contaContabilCompra',
+  'contaContabilVenda',
+  'contaContabilDevCompra',
+  'contaContabilDevVenda',
+];
+
+function readComprasDraftFromStorage(productId: number): Partial<ComprasFormStateShape> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(comprasAnaliseDraftStorageKey(productId));
+    if (!raw) return null;
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    const out: Partial<ComprasFormStateShape> = {};
+    for (const k of COMPRAS_FORM_KEYS) {
+      const v = o[k];
+      if (typeof v === 'string') out[k] = v;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeComprasFormWithDraft(
+  base: ComprasFormStateShape,
+  draft: Partial<ComprasFormStateShape> | null,
+): ComprasFormStateShape {
+  if (!draft) return base;
+  return { ...base, ...draft };
+}
+
+function buildFiscalPayload(form: {
+  ncm: string;
+  cest: string;
+  tributOrigem: string;
+  tributIcms: string;
+  idExcecaoGrupo: string;
+  classificacaoFiscalFinal: string;
+  caracteristicaContabil: string;
+  enviaLojaVarejo: boolean;
+  enviaVarejoInternet: boolean;
+  variaPrecoPorCor: boolean;
+  obsFiscal: string;
+}): ProdutoAnaliseFiscalPayload {
+  const t = (s: string) => (s.trim() === '' ? null : s.trim());
+  return {
+    ncm: t(form.ncm),
+    cest: t(form.cest),
+    tributOrigem: t(form.tributOrigem),
+    tributIcms: t(form.tributIcms),
+    idExcecaoGrupo: t(form.idExcecaoGrupo),
+    classificacaoFiscalFinal: t(form.classificacaoFiscalFinal),
+    caracteristicaContabil: t(form.caracteristicaContabil),
+    enviaLojaVarejo: form.enviaLojaVarejo,
+    enviaVarejoInternet: form.enviaVarejoInternet,
+    variaPrecoPorCor: form.variaPrecoPorCor,
+    obsFiscal: t(form.obsFiscal),
+  };
+}
+
+type FiscalFormStateShape = {
+  ncm: string;
+  cest: string;
+  tributOrigem: string;
+  tributIcms: string;
+  idExcecaoGrupo: string;
+  classificacaoFiscalFinal: string;
+  caracteristicaContabil: string;
+  enviaLojaVarejo: boolean;
+  enviaVarejoInternet: boolean;
+  variaPrecoPorCor: boolean;
+  obsFiscal: string;
+};
+
+const FISCAL_DRAFT_VERSION = 1 as const;
+
+type FiscalAnaliseDraftStored = {
+  v: typeof FISCAL_DRAFT_VERSION;
+  statusFluxo: number;
+  form: FiscalFormStateShape;
+};
+
+function fiscalFormSeedFromProduct(product: Product): FiscalFormStateShape {
+  return {
+    ncm: ncmPrincipalDoProduto(product.ncm, product.cores) ?? '',
+    cest: (product.cest ?? '').trim(),
+    tributOrigem: (product.tributOrigem ?? '').trim(),
+    tributIcms: (product.tributIcms ?? '').trim(),
+    idExcecaoGrupo: (product.idExcecaoGrupo ?? '').trim(),
+    classificacaoFiscalFinal: (product.classificacaoFiscalFinal ?? '').trim(),
+    caracteristicaContabil: (product.caracteristicaContabil ?? '').trim(),
+    enviaLojaVarejo: Boolean(product.enviaLojaVarejo),
+    enviaVarejoInternet: Boolean(product.enviaVarejoInternet),
+    variaPrecoPorCor: Boolean(product.variaPrecoPorCor),
+    obsFiscal: (product.obsFiscal ?? '').trim(),
+  };
+}
+
+function readFiscalAnaliseDraft(produtoId: number): FiscalAnaliseDraftStored | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(fiscalAnaliseDraftStorageKey(produtoId));
+    if (!raw) return null;
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    if (o.v !== FISCAL_DRAFT_VERSION || typeof o.statusFluxo !== 'number' || !o.form || typeof o.form !== 'object') return null;
+    const f = o.form as Record<string, unknown>;
+    const form: FiscalFormStateShape = {
+      ncm: typeof f.ncm === 'string' ? f.ncm : '',
+      cest: typeof f.cest === 'string' ? f.cest : '',
+      tributOrigem: typeof f.tributOrigem === 'string' ? f.tributOrigem : '',
+      tributIcms: typeof f.tributIcms === 'string' ? f.tributIcms : '',
+      idExcecaoGrupo: typeof f.idExcecaoGrupo === 'string' ? f.idExcecaoGrupo : '',
+      classificacaoFiscalFinal: typeof f.classificacaoFiscalFinal === 'string' ? f.classificacaoFiscalFinal : '',
+      caracteristicaContabil: typeof f.caracteristicaContabil === 'string' ? f.caracteristicaContabil : '',
+      enviaLojaVarejo: Boolean(f.enviaLojaVarejo),
+      enviaVarejoInternet: Boolean(f.enviaVarejoInternet),
+      variaPrecoPorCor: Boolean(f.variaPrecoPorCor),
+      obsFiscal: typeof f.obsFiscal === 'string' ? f.obsFiscal : '',
+    };
+    return { v: FISCAL_DRAFT_VERSION, statusFluxo: o.statusFluxo, form };
+  } catch {
+    return null;
+  }
+}
+
+function writeFiscalAnaliseDraft(produtoId: number, statusFluxo: number, form: FiscalFormStateShape): void {
+  try {
+    const payload: FiscalAnaliseDraftStored = { v: FISCAL_DRAFT_VERSION, statusFluxo, form: { ...form } };
+    window.sessionStorage.setItem(fiscalAnaliseDraftStorageKey(produtoId), JSON.stringify(payload));
+  } catch {
+    /* quota / modo privado */
+  }
+}
+
 export function ProdutoDetalhesModal({
   product,
   isOpen,
   onClose,
   onAprovar,
   onReprovar,
-  onIniciarAnalise,
+  onMutationSuccess,
   showActions = true,
   departamento,
 }: ProdutoDetalhesModalProps) {
-  if (!isOpen) return null;
+  const [salvandoCompras, setSalvandoCompras] = useState(false);
+  const [salvandoFiscal, setSalvandoFiscal] = useState(false);
+
+  const ncmInicialFiscal = ncmPrincipalDoProduto(product.ncm, product.cores) ?? '';
 
   const [formFiscal, setFormFiscal] = useState({
-    ncm: product.ncm || '',
+    ncm: ncmInicialFiscal,
     cest: '',
     tributOrigem: '',
     tributIcms: '',
-    tipoItemSped: '',
     idExcecaoGrupo: '',
     classificacaoFiscalFinal: '',
+    caracteristicaContabil: '',
+    enviaLojaVarejo: false,
+    enviaVarejoInternet: false,
+    variaPrecoPorCor: false,
     obsFiscal: '',
   });
 
@@ -128,24 +400,103 @@ export function ProdutoDetalhesModal({
     subgrupoProduto: '',
     codCategoria: '',
     codSubcategoria: '',
+    tipoProduto: '',
+    grade: '',
+    linha: '',
+    griffe: '',
+    colecao: '',
     unidade: '',
-    cest: '',
     tipoStatusProduto: '',
     sexoTipo: '',
-    contaContabil: '',
-    contaContabilCompra: '',
-    contaContabilVenda: '',
-    contaContabilDevCompra: '',
-    contaContabilDevVenda: '',
+    tipoItemSped: '',
     indicadorCfop: '',
-    continuidade: '',
     periodoPcp: '',
     redeLojas: '',
-    codProdutoSolucao: '',
-    sujeitoSubstituicaoTributaria: '',
     codProdutoSegmento: '',
     obsCompras: '',
+    contaContabil: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabil ?? '',
+    contaContabilCompra: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilCompra ?? '',
+    contaContabilVenda: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilVenda ?? '',
+    contaContabilDevCompra: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilDevCompra ?? '',
+    contaContabilDevVenda: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilDevVenda ?? '',
   });
+
+  // Só reinicia análise fiscal ao abrir / trocar produto, departamento ou status (ex.: 4→5 após salvar).
+  // GET interno não devolve os campos fiscais no JSON; usamos rascunho em sessionStorage quando o status bate.
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const seed = fiscalFormSeedFromProduct(product);
+    if (departamento === 'fiscal') {
+      const draft = readFiscalAnaliseDraft(product.id);
+      if (draft) {
+        const draftCompativel =
+          draft.statusFluxo === product.statusFluxo ||
+          (draft.statusFluxo === 5 && product.statusFluxo === 4);
+        if (draftCompativel) {
+          setFormFiscal({
+            ...seed,
+            ...draft.form,
+            ncm: draft.form.ncm.trim() ? draft.form.ncm : seed.ncm,
+          });
+          return;
+        }
+      }
+    }
+    setFormFiscal(seed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hidratação na abertura deste cadastro / mudança de status
+  }, [isOpen, product.id, departamento, product.statusFluxo]);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+
+    const baseCompras: ComprasFormStateShape = {
+      grupoProduto: '',
+      subgrupoProduto: '',
+      codCategoria: '',
+      codSubcategoria: '',
+      tipoProduto: (product.tipoProduto ?? '').trim(),
+      grade: (product.grade ?? '').trim(),
+      linha: (product.linha ?? '').trim(),
+      griffe: (product.griffe ?? '').trim(),
+      colecao: (product.colecao ?? '').trim(),
+      unidade: '',
+      tipoStatusProduto: '',
+      sexoTipo: '',
+      tipoItemSped: '',
+      indicadorCfop: '',
+      periodoPcp: '',
+      redeLojas: '',
+      codProdutoSegmento: '',
+      obsCompras: '',
+      contaContabil: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabil ?? '',
+      contaContabilCompra: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilCompra ?? '',
+      contaContabilVenda: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilVenda ?? '',
+      contaContabilDevCompra: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilDevCompra ?? '',
+      contaContabilDevVenda: DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS.contaContabilDevVenda ?? '',
+    };
+
+    if (departamento === 'compras') {
+      const draft = readComprasDraftFromStorage(product.id);
+      setFormCompras(mergeComprasFormWithDraft(baseCompras, draft));
+    } else {
+      setFormCompras(baseCompras);
+    }
+    // Intencional: reset compras ao abrir ou trocar produto; compras mescla rascunho (GET interno não traz estes campos).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, product.id, departamento, product.tipoProduto, product.grade, product.linha, product.griffe, product.colecao, product.ncm, product.cores]);
+
+  useEffect(() => {
+    if (!isOpen || departamento !== 'compras') return;
+    const id = product.id;
+    const handle = window.setTimeout(() => {
+      try {
+        window.sessionStorage.setItem(comprasAnaliseDraftStorageKey(id), JSON.stringify(formCompras));
+      } catch {
+        /* quota / modo privado */
+      }
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [formCompras, isOpen, departamento, product.id]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -158,8 +509,16 @@ export function ProdutoDetalhesModal({
     });
   };
 
-  const canAprovar = (departamento === 'fiscal' && product.statusFluxo === 5) || (departamento === 'compras' && product.statusFluxo === 3);
-  const canIniciar = (departamento === 'fiscal' && product.statusFluxo === 4) || (departamento === 'compras' && product.statusFluxo === 2);
+  // Compras: API ainda grava status 2 ao salvar análise; o dashboard pode exibir 3 (overlay) até aprovar.
+  // Fiscal: salvar análise (PUT) leva 4→5; aprovar (POST) só no status 5, com integração ERP automática na API.
+  const canAprovar =
+    (departamento === 'fiscal' && product.statusFluxo === 5) ||
+    (departamento === 'compras' && (product.statusFluxo === 2 || product.statusFluxo === 3));
+  const canIniciar =
+    (departamento === 'fiscal' && (product.statusFluxo === 4 || product.statusFluxo === 5)) ||
+    (departamento === 'compras' && (product.statusFluxo === 2 || product.statusFluxo === 3));
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-[fadeIn_0.3s_ease-out]">
@@ -237,7 +596,7 @@ export function ProdutoDetalhesModal({
                     NCM
                   </label>
                   <p className="text-white text-lg font-mono" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                    {product.ncm}
+                    {ncmPrincipalDoProduto(product.ncm, product.cores) ?? '-'}
                   </p>
                 </div>
 
@@ -576,19 +935,6 @@ export function ProdutoDetalhesModal({
 
                   <div>
                     <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Tipo Item SPED
-                    </label>
-                    <input
-                      type="text"
-                      value={formFiscal.tipoItemSped}
-                      onChange={(e) => setFormFiscal({ ...formFiscal, tipoItemSped: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
                       ID Exceção Grupo
                     </label>
                     <input
@@ -611,6 +957,44 @@ export function ProdutoDetalhesModal({
                       className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                       style={{ fontFamily: 'Outfit, sans-serif' }}
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                      Característica Contábil
+                    </label>
+                    <input
+                      type="text"
+                      value={formFiscal.caracteristicaContabil}
+                      onChange={(e) => setFormFiscal({ ...formFiscal, caracteristicaContabil: e.target.value })}
+                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                      style={{ fontFamily: 'Outfit, sans-serif' }}
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                      Flags
+                    </label>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {[
+                        { key: 'enviaLojaVarejo', label: 'Envia loja varejo' },
+                        { key: 'enviaVarejoInternet', label: 'Envia varejo internet' },
+                        { key: 'variaPrecoPorCor', label: 'Varia preço por cor' },
+                      ].map((item) => (
+                        <label key={item.key} className="flex items-center gap-3 cursor-pointer group">
+                          <input
+                            type="checkbox"
+                            checked={Boolean((formFiscal as any)[item.key])}
+                            onChange={(e) => setFormFiscal({ ...formFiscal, [item.key]: e.target.checked } as any)}
+                            className="w-5 h-5 rounded border-2 border-white/30 bg-white/20 checked:bg-white checked:border-white focus:outline-none focus:ring-2 focus:ring-white/40 transition-all duration-300 cursor-pointer"
+                          />
+                          <span className="text-white/90 group-hover:text-white transition-colors" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                            {item.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="md:col-span-2">
@@ -637,280 +1021,7 @@ export function ProdutoDetalhesModal({
                     Análise Compras
                   </h3>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Grupo Produto
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.grupoProduto}
-                      onChange={(e) => setFormCompras({ ...formCompras, grupoProduto: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Subgrupo Produto
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.subgrupoProduto}
-                      onChange={(e) => setFormCompras({ ...formCompras, subgrupoProduto: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Código Categoria
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.codCategoria}
-                      onChange={(e) => setFormCompras({ ...formCompras, codCategoria: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Código Subcategoria
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.codSubcategoria}
-                      onChange={(e) => setFormCompras({ ...formCompras, codSubcategoria: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Unidade
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.unidade}
-                      onChange={(e) => setFormCompras({ ...formCompras, unidade: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      CEST
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.cest}
-                      onChange={(e) => setFormCompras({ ...formCompras, cest: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Tipo Status Produto
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.tipoStatusProduto}
-                      onChange={(e) => setFormCompras({ ...formCompras, tipoStatusProduto: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Sexo Tipo
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.sexoTipo}
-                      onChange={(e) => setFormCompras({ ...formCompras, sexoTipo: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Conta Contábil
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.contaContabil}
-                      onChange={(e) => setFormCompras({ ...formCompras, contaContabil: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Conta Contábil Compra
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.contaContabilCompra}
-                      onChange={(e) => setFormCompras({ ...formCompras, contaContabilCompra: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Conta Contábil Venda
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.contaContabilVenda}
-                      onChange={(e) => setFormCompras({ ...formCompras, contaContabilVenda: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Conta Contábil Dev. Compra
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.contaContabilDevCompra}
-                      onChange={(e) => setFormCompras({ ...formCompras, contaContabilDevCompra: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Conta Contábil Dev. Venda
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.contaContabilDevVenda}
-                      onChange={(e) => setFormCompras({ ...formCompras, contaContabilDevVenda: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Indicador CFOP
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.indicadorCfop}
-                      onChange={(e) => setFormCompras({ ...formCompras, indicadorCfop: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Continuidade
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.continuidade}
-                      onChange={(e) => setFormCompras({ ...formCompras, continuidade: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Período PCP
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.periodoPcp}
-                      onChange={(e) => setFormCompras({ ...formCompras, periodoPcp: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Rede Lojas
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.redeLojas}
-                      onChange={(e) => setFormCompras({ ...formCompras, redeLojas: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Código Produto Solução
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.codProdutoSolucao}
-                      onChange={(e) => setFormCompras({ ...formCompras, codProdutoSolucao: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Sujeito Subst. Tributária
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.sujeitoSubstituicaoTributaria}
-                      onChange={(e) => setFormCompras({ ...formCompras, sujeitoSubstituicaoTributaria: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Código Produto Segmento
-                    </label>
-                    <input
-                      type="text"
-                      value={formCompras.codProdutoSegmento}
-                      onChange={(e) => setFormCompras({ ...formCompras, codProdutoSegmento: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Observações Compras
-                    </label>
-                    <textarea
-                      value={formCompras.obsCompras}
-                      onChange={(e) => setFormCompras({ ...formCompras, obsCompras: e.target.value })}
-                      rows={3}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300 resize-none"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-                </div>
+                <AnaliseComprasFields formCompras={formCompras} setFormCompras={setFormCompras} disabled={salvandoCompras} />
               </div>
             )}
           </div>
@@ -927,21 +1038,65 @@ export function ProdutoDetalhesModal({
                 Fechar
               </button>
 
-              {canIniciar && onIniciarAnalise && (
+              {canIniciar && (departamento === 'compras' || departamento === 'fiscal') && (
                 <button
-                  onClick={() => {
-                    if (departamento === 'fiscal') {
-                      console.log('Dados Fiscais preenchidos:', formFiscal);
-                    } else if (departamento === 'compras') {
-                      console.log('Dados Compras preenchidos:', formCompras);
+                  type="button"
+                  disabled={departamento === 'compras' ? salvandoCompras : salvandoFiscal}
+                  onClick={async () => {
+                    if (departamento === 'compras') {
+                      setSalvandoCompras(true);
+                      try {
+                        const pend = mensagemCamposComprasObrigatorios(formCompras);
+                        if (pend) {
+                          toast.error(pend);
+                          return;
+                        }
+                        await iniciarAnaliseCompras(product.id, buildComprasPayload({ ...formCompras }));
+                        toast.success('Análise de compras salva.', {
+                          description:
+                            'Status exibido como “Em análise compras” na fila. Quando estiver pronto, clique em Aprovar para enviar ao fiscal (status 4 no sistema).',
+                          duration: 4500,
+                        });
+                        onMutationSuccess?.();
+                      } catch (error) {
+                        toast.error('Não foi possível salvar a análise de compras.', {
+                          description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
+                        });
+                      } finally {
+                        setSalvandoCompras(false);
+                      }
+                      return;
                     }
-                    onIniciarAnalise();
-                    onClose();
+                    if (departamento === 'fiscal') {
+                      setSalvandoFiscal(true);
+                      try {
+                        const res = await iniciarAnaliseFiscal(product.id, buildFiscalPayload(formFiscal));
+                        writeFiscalAnaliseDraft(product.id, res.statusFluxo, formFiscal);
+                        toast.success('Análise fiscal salva.', {
+                          description:
+                            'Produto passa a status 5 (em análise fiscal) na API. Revise os obrigatórios e use Aprovar: o sistema integra automaticamente ao ERP (status 7) quando a integração for bem-sucedida.',
+                          duration: 5000,
+                        });
+                        onMutationSuccess?.();
+                      } catch (error) {
+                        toast.error('Não foi possível salvar a análise fiscal.', {
+                          description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
+                        });
+                      } finally {
+                        setSalvandoFiscal(false);
+                      }
+                    }
                   }}
-                  className="px-6 py-3 bg-blue-500/30 hover:bg-blue-500/50 text-white rounded-xl border border-blue-400/30 transition-all duration-300 font-medium"
+                  className="px-6 py-3 bg-blue-500/30 hover:bg-blue-500/50 text-white rounded-xl border border-blue-400/30 transition-all duration-300 font-medium disabled:opacity-50"
                   style={{ fontFamily: 'Outfit, sans-serif' }}
                 >
-                  Iniciar Análise
+                  {departamento === 'compras'
+                    ? salvandoCompras
+                      ? 'Salvando...'
+                      : 'Salvar análise de compras'
+                    : salvandoFiscal
+                      ? 'Salvando...'
+                      : 'Salvar análise fiscal'}
                 </button>
               )}
 
@@ -949,9 +1104,14 @@ export function ProdutoDetalhesModal({
                 <>
                   {onReprovar && (
                     <button
-                      onClick={() => {
-                        onReprovar();
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await onReprovar();
                         onClose();
+                        } catch {
+                          /* erro já exibido pelo handler */
+                        }
                       }}
                       className="px-6 py-3 bg-red-500/30 hover:bg-red-500/50 text-white rounded-xl border border-red-400/30 transition-all duration-300 font-medium flex items-center gap-2"
                       style={{ fontFamily: 'Outfit, sans-serif' }}
@@ -962,15 +1122,47 @@ export function ProdutoDetalhesModal({
                   )}
                   {onAprovar && (
                     <button
-                      onClick={() => {
-                        onAprovar();
+                      type="button"
+                      disabled={salvandoCompras || salvandoFiscal}
+                      onClick={async () => {
+                        try {
+                          if (departamento === 'compras') {
+                            const pend = mensagemCamposComprasObrigatorios(formCompras);
+                            if (pend) {
+                              toast.error(pend);
+                              return;
+                            }
+                            setSalvandoCompras(true);
+                            try {
+                              try {
+                                await iniciarAnaliseCompras(product.id, buildComprasPayload({ ...formCompras }));
+                              } catch (error) {
+                                toast.error('Não foi possível salvar a análise de compras antes de aprovar.', {
+                                  description:
+                                    error instanceof ApiError || error instanceof Error ? error.message : undefined,
+                                });
+                                return;
+                              }
+                              await onAprovar();
                         onClose();
+                            } catch {
+                              /* falha no POST aprovar: toast em ColaboradorDashboardCompras.handleAprovar */
+                            } finally {
+                              setSalvandoCompras(false);
+                            }
+                            return;
+                          }
+                          await onAprovar();
+                          onClose();
+                        } catch {
+                          /* erro já exibido pelo handler */
+                        }
                       }}
-                      className="px-6 py-3 bg-green-500/30 hover:bg-green-500/50 text-white rounded-xl border border-green-400/30 transition-all duration-300 font-medium flex items-center gap-2"
+                      className="px-6 py-3 bg-green-500/30 hover:bg-green-500/50 text-white rounded-xl border border-green-400/30 transition-all duration-300 font-medium flex items-center gap-2 disabled:opacity-50"
                       style={{ fontFamily: 'Outfit, sans-serif' }}
                     >
                       <CheckCircle className="w-4 h-4" />
-                      Aprovar
+                      {departamento === 'compras' && salvandoCompras ? 'Salvando e aprovando…' : 'Aprovar'}
                     </button>
                   )}
                 </>

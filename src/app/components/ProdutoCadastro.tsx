@@ -8,9 +8,17 @@ import {
   ApiError,
   atualizarPreCadastroProduto,
   criarPreCadastroProduto,
+  listarErpColecoes,
+  listarErpComposicoes,
+  listarErpFabricantes,
+  listarErpGrades,
+  type ComboErp,
   type ProdutoCadastroDetalhe,
   type ProdutoPreCadastroPayload,
 } from '../lib/supplier-api';
+import { loadProdutoPreCadastroSnapshot, saveProdutoPreCadastroSnapshot } from '../lib/produto-precadastro-snapshot';
+import { resolveFabricanteCodigoErpSalvo } from '../lib/erp-produto-integracao';
+import { Combobox, type ComboboxOption } from './ui/combobox';
 
 interface Cor {
   codCor: string;
@@ -30,7 +38,7 @@ interface Foto {
   nomeArquivo: string;
   caminhoArquivo: string;
   base64Foto: string;
-  ordemFoto: number;
+  ordemFoto: number | null;
 }
 
 interface Barra {
@@ -40,19 +48,57 @@ interface Barra {
   grade: string;
 }
 
+const comboErpToOptions = (items: ComboErp[]): ComboboxOption[] =>
+  (items ?? [])
+    .filter((x) => (x?.codigo ?? '').toString().trim().length > 0)
+    .map((x) => ({
+      value: String(x.codigo).trim(),
+      label: (x.descricao?.toString() ?? String(x.codigo)).trim() || String(x.codigo).trim(),
+    }));
+
+function mergeCustomErpOption(options: ComboboxOption[], current: string): ComboboxOption[] {
+  const t = current.trim();
+  if (!t) return options;
+  if (options.some((o) => o.value === t || o.label === t)) return options;
+  return [{ value: t, label: t }, ...options];
+}
+
+function comboboxValueFromStored(raw: string, options: ComboboxOption[]): string | null {
+  const t = raw.trim();
+  if (!t) return null;
+  if (options.some((o) => o.value === t)) return t;
+  const byLabel = options.find((o) => o.label === t);
+  if (byLabel) return byLabel.value;
+  return t;
+}
+
+const erpComboButtonClass =
+  'min-h-[48px] px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white hover:bg-white/25 focus-visible:ring-white/30 disabled:opacity-60';
+const erpComboButtonClassSm =
+  'min-h-[38px] px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm hover:bg-white/25 focus-visible:ring-white/30 disabled:opacity-60';
+
 interface ProdutoFormData {
   descProduto: string;
   descProdutoNf: string;
   referFabricante: string;
-  ncm: string;
-  tipoProduto: string;
   fabricante: string;
   composicao: string;
-  grade: string;
-  linha: string;
-  griffe: string;
-  colecao: string;
   obsFornecedor: string;
+  subColecao: string;
+  tamCentimetros: string;
+  tipoBico: string;
+  tipoSalto: string;
+  pisada: string;
+  alturaDrop: string;
+  alturaSalto: string;
+  classificacaoAltura: string;
+  material: string;
+  materialInterno: string;
+  ocasiaoUso: string;
+  tecnologia: string;
+  descricaoTecnica: string;
+  descricaoEmocional: string;
+  peso: string;
   cores: Cor[];
   precos: Preco[];
   fotos: Foto[];
@@ -62,60 +108,99 @@ interface ProdutoFormData {
 type ProdutoCadastroMode = 'create' | 'edit';
 
 function toPayload(formData: ProdutoFormData): ProdutoPreCadastroPayload {
+  const pesoNumber = Number(formData.peso.replace(',', '.'));
   return {
     descProduto: formData.descProduto,
     descProdutoNf: formData.descProdutoNf || null,
     referFabricante: formData.referFabricante || null,
-    ncm: formData.ncm || null,
-    tipoProduto: formData.tipoProduto || null,
     fabricante: formData.fabricante || null,
     composicao: formData.composicao || null,
-    grade: formData.grade || null,
-    linha: formData.linha || null,
-    griffe: formData.griffe || null,
-    colecao: formData.colecao || null,
     obsFornecedor: formData.obsFornecedor || null,
+    subColecao: formData.subColecao || null,
+    tamCentimetros: formData.tamCentimetros || null,
+    tipoBico: formData.tipoBico || null,
+    tipoSalto: formData.tipoSalto || null,
+    pisada: formData.pisada || null,
+    alturaDrop: formData.alturaDrop || null,
+    alturaSalto: formData.alturaSalto || null,
+    classificacaoAltura: formData.classificacaoAltura || null,
+    material: formData.material || null,
+    materialInterno: formData.materialInterno || null,
+    ocasiaoUso: formData.ocasiaoUso || null,
+    tecnologia: formData.tecnologia || null,
+    descricaoTecnica: formData.descricaoTecnica || null,
+    descricaoEmocional: formData.descricaoEmocional || null,
+    peso: Number.isFinite(pesoNumber) && formData.peso.trim().length ? pesoNumber : null,
     cores: formData.cores.map((c) => ({
       codCor: c.codCor,
       descCor: c.descCor,
-      origemCor: c.origemCor,
-      corFabricante: c.corFabricante,
-      ncm: c.ncm,
+      origemCor: c.origemCor.trim().length ? c.origemCor : null,
+      corFabricante: c.corFabricante.trim().length ? c.corFabricante : null,
+      ncm: c.ncm.trim().length ? c.ncm : null,
     })),
     precos: formData.precos.map((p) => ({
       codigoTabelaPreco: p.codigoTabelaPreco,
       preco: p.preco,
     })),
     fotos: formData.fotos.map((f) => ({
-      corLinx: f.corLinx,
-      nomeArquivo: f.nomeArquivo,
-      caminhoArquivo: f.caminhoArquivo,
-      base64Foto: f.base64Foto,
+      corLinx: f.corLinx.trim().length ? f.corLinx : null,
+      nomeArquivo: f.nomeArquivo.trim().length ? f.nomeArquivo : null,
+      caminhoArquivo: f.caminhoArquivo.trim().length ? f.caminhoArquivo : null,
+      base64Foto: f.base64Foto.trim().length ? f.base64Foto : null,
       ordemFoto: f.ordemFoto,
     })),
     barras: formData.barras.map((b) => ({
       codigoBarra: b.codigoBarra,
       corProduto: b.corProduto,
       tamanho: b.tamanho,
-      grade: b.grade,
+      grade: b.grade.trim().length ? b.grade : null,
     })),
   };
 }
 
-function fromDetalhe(produto: ProdutoCadastroDetalhe): ProdutoFormData {
+function pickFirstNonEmpty(...vals: (string | null | undefined)[]): string {
+  for (const v of vals) {
+    if (v != null && String(v).trim() !== '') return String(v);
+  }
+  return '';
+}
+
+function pesoNumberToFormField(peso: number | null | undefined): string {
+  if (peso == null || !Number.isFinite(Number(peso))) return '';
+  const n = Number(peso);
+  return String(n).replace('.', ',');
+}
+
+function detalheToFormData(produto: ProdutoCadastroDetalhe, snapshot: ProdutoPreCadastroPayload | null): ProdutoFormData {
+  const snap = snapshot;
+
+  const pesoStr = pickFirstNonEmpty(
+    pesoNumberToFormField(produto.peso),
+    pesoNumberToFormField(snap?.peso ?? undefined),
+  );
+
   return {
     descProduto: produto.descProduto ?? '',
     descProdutoNf: produto.descProdutoNf ?? '',
     referFabricante: produto.referFabricante ?? '',
-    ncm: produto.ncm ?? '',
-    tipoProduto: produto.tipoProduto ?? '',
-    fabricante: produto.fabricante ?? '',
-    composicao: produto.composicao ?? '',
-    grade: produto.grade ?? '',
-    linha: produto.linha ?? '',
-    griffe: produto.griffe ?? '',
-    colecao: produto.colecao ?? '',
-    obsFornecedor: produto.obsFornecedor ?? '',
+    fabricante: pickFirstNonEmpty(produto.fabricante, snap?.fabricante ?? undefined),
+    composicao: pickFirstNonEmpty(produto.composicao, snap?.composicao ?? undefined),
+    obsFornecedor: pickFirstNonEmpty(produto.obsFornecedor, snap?.obsFornecedor ?? undefined),
+    subColecao: pickFirstNonEmpty(produto.subColecao, snap?.subColecao ?? undefined),
+    tamCentimetros: pickFirstNonEmpty(produto.tamCentimetros, snap?.tamCentimetros ?? undefined),
+    tipoBico: pickFirstNonEmpty(produto.tipoBico, snap?.tipoBico ?? undefined),
+    tipoSalto: pickFirstNonEmpty(produto.tipoSalto, snap?.tipoSalto ?? undefined),
+    pisada: pickFirstNonEmpty(produto.pisada, snap?.pisada ?? undefined),
+    alturaDrop: pickFirstNonEmpty(produto.alturaDrop, snap?.alturaDrop ?? undefined),
+    alturaSalto: pickFirstNonEmpty(produto.alturaSalto, snap?.alturaSalto ?? undefined),
+    classificacaoAltura: pickFirstNonEmpty(produto.classificacaoAltura, snap?.classificacaoAltura ?? undefined),
+    material: pickFirstNonEmpty(produto.material, snap?.material ?? undefined),
+    materialInterno: pickFirstNonEmpty(produto.materialInterno, snap?.materialInterno ?? undefined),
+    ocasiaoUso: pickFirstNonEmpty(produto.ocasiaoUso, snap?.ocasiaoUso ?? undefined),
+    tecnologia: pickFirstNonEmpty(produto.tecnologia, snap?.tecnologia ?? undefined),
+    descricaoTecnica: pickFirstNonEmpty(produto.descricaoTecnica, snap?.descricaoTecnica ?? undefined),
+    descricaoEmocional: pickFirstNonEmpty(produto.descricaoEmocional, snap?.descricaoEmocional ?? undefined),
+    peso: pesoStr,
     cores: (produto.cores ?? []).map((c) => ({
       codCor: c.codCor ?? '',
       descCor: c.descCor ?? '',
@@ -132,7 +217,7 @@ function fromDetalhe(produto: ProdutoCadastroDetalhe): ProdutoFormData {
       nomeArquivo: f.nomeArquivo ?? '',
       caminhoArquivo: f.caminhoArquivo ?? '',
       base64Foto: f.base64Foto ?? '',
-      ordemFoto: Number(f.ordemFoto ?? 0),
+      ordemFoto: f.ordemFoto == null ? null : Number(f.ordemFoto),
     })),
     barras: (produto.barras ?? []).map((b) => ({
       codigoBarra: b.codigoBarra ?? '',
@@ -167,15 +252,24 @@ export function ProdutoCadastro({
     descProduto: '',
     descProdutoNf: '',
     referFabricante: '',
-    ncm: '',
-    tipoProduto: '',
     fabricante: '',
     composicao: '',
-    grade: '',
-    linha: '',
-    griffe: '',
-    colecao: '',
     obsFornecedor: '',
+    subColecao: '',
+    tamCentimetros: '',
+    tipoBico: '',
+    tipoSalto: '',
+    pisada: '',
+    alturaDrop: '',
+    alturaSalto: '',
+    classificacaoAltura: '',
+    material: '',
+    materialInterno: '',
+    ocasiaoUso: '',
+    tecnologia: '',
+    descricaoTecnica: '',
+    descricaoEmocional: '',
+    peso: '',
     cores: [],
     precos: [],
     fotos: [],
@@ -184,9 +278,73 @@ export function ProdutoCadastro({
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const [loadingCombos, setLoadingCombos] = useState(false);
+  const [combosDisponiveis, setCombosDisponiveis] = useState(false);
+  const [fabricanteOptions, setFabricanteOptions] = useState<ComboboxOption[]>([]);
+  const [composicaoOptions, setComposicaoOptions] = useState<ComboboxOption[]>([]);
+  const [colecaoOptions, setColecaoOptions] = useState<ComboboxOption[]>([]);
+  const [gradeOptions, setGradeOptions] = useState<ComboboxOption[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCombos = async () => {
+      setLoadingCombos(true);
+      try {
+        const [fabricantes, composicoes, colecoes, grades] = await Promise.all([
+          listarErpFabricantes(),
+          listarErpComposicoes(),
+          listarErpColecoes(),
+          listarErpGrades(),
+        ]);
+        if (cancelled) return;
+        setFabricanteOptions(comboErpToOptions(fabricantes));
+        setComposicaoOptions(comboErpToOptions(composicoes));
+        setColecaoOptions(comboErpToOptions(colecoes));
+        setGradeOptions(comboErpToOptions(grades));
+        setCombosDisponiveis(true);
+      } catch {
+        if (!cancelled) {
+          setCombosDisponiveis(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingCombos(false);
+        }
+      }
+    };
+
+    void loadCombos();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!combosDisponiveis || !fabricanteOptions.length) return;
+    setFormData((prev) => {
+      const r = resolveFabricanteCodigoErpSalvo(prev.fabricante, fabricanteOptions);
+      return r === prev.fabricante ? prev : { ...prev, fabricante: r };
+    });
+  }, [combosDisponiveis, fabricanteOptions]);
+
+  const fabricanteOpts = useMemo(
+    () => mergeCustomErpOption(fabricanteOptions, formData.fabricante),
+    [fabricanteOptions, formData.fabricante],
+  );
+  const composicaoOpts = useMemo(
+    () => mergeCustomErpOption(composicaoOptions, formData.composicao),
+    [composicaoOptions, formData.composicao],
+  );
+  const colecaoOpts = useMemo(
+    () => mergeCustomErpOption(colecaoOptions, formData.subColecao),
+    [colecaoOptions, formData.subColecao],
+  );
+
   useEffect(() => {
     if (mode === 'edit' && produtoDetalhe) {
-      setFormData(fromDetalhe(produtoDetalhe));
+      const snapshot = loadProdutoPreCadastroSnapshot(produtoDetalhe.id);
+      setFormData(detalheToFormData(produtoDetalhe, snapshot));
     }
   }, [mode, produtoDetalhe]);
 
@@ -325,13 +483,15 @@ export function ProdutoCadastro({
         }
 
         await atualizarPreCadastroProduto(session.token, produtoId, payload);
+        saveProdutoPreCadastroSnapshot(produtoId, payload);
 
         toast.success('Produto atualizado com sucesso!', {
           description: 'O pré-cadastro foi salvo.',
           duration: 2000,
         });
       } else {
-        await criarPreCadastroProduto(session.token, payload);
+        const criado = await criarPreCadastroProduto(session.token, payload);
+        saveProdutoPreCadastroSnapshot(criado.id, payload);
 
         toast.success('Produto cadastrado com sucesso!', {
           description: 'O pré-cadastro foi salvo e está disponível no dashboard.',
@@ -424,48 +584,68 @@ export function ProdutoCadastro({
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    NCM
+                    Subcoleção
                   </label>
-                  <input
-                    type="text"
-                    value={formData.ncm}
-                    onChange={(e) => handleChange('ncm', e.target.value)}
-                    placeholder="00000000"
-                    maxLength={8}
-                    disabled={isReadOnly}
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Tipo de Produto
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.tipoProduto}
-                    onChange={(e) => handleChange('tipoProduto', e.target.value)}
-                    placeholder="Ex: Vestuário"
-                    disabled={isReadOnly}
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
+                  {combosDisponiveis && colecaoOpts.length > 0 ? (
+                    <Combobox
+                      value={comboboxValueFromStored(formData.subColecao, colecaoOpts)}
+                      options={colecaoOpts}
+                      onChange={(val) => handleChange('subColecao', val ?? '')}
+                      placeholder={loadingCombos ? 'Carregando...' : 'Selecione a coleção no ERP'}
+                      searchPlaceholder="Buscar coleção..."
+                      disabled={isReadOnly || loadingCombos}
+                      buttonClassName={erpComboButtonClass}
+                      className="bg-white/10 backdrop-blur-xl border-white/20"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={formData.subColecao}
+                      onChange={(e) => handleChange('subColecao', e.target.value)}
+                      placeholder="Ex: Linha Conforto"
+                      disabled={isReadOnly}
+                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                      style={{ fontFamily: 'Outfit, sans-serif' }}
+                    />
+                  )}
+                  {combosDisponiveis && colecaoOpts.length > 0 && (
+                    <p className="text-white/50 text-xs mt-1.5" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                      Lista integrada ao ERP (tabela COLECOES).
+                    </p>
+                  )}
                 </div>
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
                     Fabricante
                   </label>
-                  <input
-                    type="text"
-                    value={formData.fabricante}
-                    onChange={(e) => handleChange('fabricante', e.target.value)}
-                    placeholder="Nome do fabricante"
-                    disabled={isReadOnly}
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
+                  {combosDisponiveis && fabricanteOpts.length > 0 ? (
+                    <Combobox
+                      value={comboboxValueFromStored(formData.fabricante, fabricanteOpts)}
+                      options={fabricanteOpts}
+                      onChange={(val) => handleChange('fabricante', val ?? '')}
+                      placeholder={loadingCombos ? 'Carregando...' : 'Selecione o fabricante (fornecedor ERP)'}
+                      searchPlaceholder="Buscar fabricante..."
+                      disabled={isReadOnly || loadingCombos}
+                      buttonClassName={erpComboButtonClass}
+                      className="bg-white/10 backdrop-blur-xl border-white/20"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={formData.fabricante}
+                      onChange={(e) => handleChange('fabricante', e.target.value)}
+                      placeholder="Código do fabricante no ERP"
+                      disabled={isReadOnly}
+                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                      style={{ fontFamily: 'Outfit, sans-serif' }}
+                    />
+                  )}
+                  {combosDisponiveis && fabricanteOpts.length > 0 && (
+                    <p className="text-white/50 text-xs mt-1.5" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                      Código do fornecedor fabricante (integração valida no ERP).
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -480,13 +660,76 @@ export function ProdutoCadastro({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Material
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.material}
+                    onChange={(e) => handleChange('material', e.target.value)}
+                    placeholder="Ex: Couro"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Material Interno
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.materialInterno}
+                    onChange={(e) => handleChange('materialInterno', e.target.value)}
+                    placeholder="Ex: Têxtil"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
                     Composição
                   </label>
+                  {combosDisponiveis && composicaoOpts.length > 0 ? (
+                    <Combobox
+                      value={comboboxValueFromStored(formData.composicao, composicaoOpts)}
+                      options={composicaoOpts}
+                      onChange={(val) => handleChange('composicao', val ?? '')}
+                      placeholder={loadingCombos ? 'Carregando...' : 'Selecione a composição no ERP'}
+                      searchPlaceholder="Buscar composição..."
+                      disabled={isReadOnly || loadingCombos}
+                      buttonClassName={erpComboButtonClass}
+                      className="bg-white/10 backdrop-blur-xl border-white/20"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={formData.composicao}
+                      onChange={(e) => handleChange('composicao', e.target.value)}
+                      placeholder="Código de composição (MATERIAIS_COMPOSICAO)"
+                      disabled={isReadOnly}
+                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                      style={{ fontFamily: 'Outfit, sans-serif' }}
+                    />
+                  )}
+                  {combosDisponiveis && composicaoOpts.length > 0 && (
+                    <p className="text-white/50 text-xs mt-1.5" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                      Código gravado conforme cadastro no ERP.
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Tamanho (cm)
+                  </label>
                   <input
                     type="text"
-                    value={formData.composicao}
-                    onChange={(e) => handleChange('composicao', e.target.value)}
-                    placeholder="Ex: 100% Algodão"
+                    value={formData.tamCentimetros}
+                    onChange={(e) => handleChange('tamCentimetros', e.target.value)}
+                    placeholder="Ex: 27"
                     disabled={isReadOnly}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
@@ -495,13 +738,13 @@ export function ProdutoCadastro({
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Grade
+                    Tipo de Bico
                   </label>
                   <input
                     type="text"
-                    value={formData.grade}
-                    onChange={(e) => handleChange('grade', e.target.value)}
-                    placeholder="Ex: P, M, G, GG"
+                    value={formData.tipoBico}
+                    onChange={(e) => handleChange('tipoBico', e.target.value)}
+                    placeholder="Ex: Redondo"
                     disabled={isReadOnly}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
@@ -510,13 +753,13 @@ export function ProdutoCadastro({
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Linha
+                    Tipo de Salto
                   </label>
                   <input
                     type="text"
-                    value={formData.linha}
-                    onChange={(e) => handleChange('linha', e.target.value)}
-                    placeholder="Linha do produto"
+                    value={formData.tipoSalto}
+                    onChange={(e) => handleChange('tipoSalto', e.target.value)}
+                    placeholder="Ex: Bloco"
                     disabled={isReadOnly}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
@@ -525,13 +768,13 @@ export function ProdutoCadastro({
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Griffe
+                    Pisada
                   </label>
                   <input
                     type="text"
-                    value={formData.griffe}
-                    onChange={(e) => handleChange('griffe', e.target.value)}
-                    placeholder="Griffe/Marca"
+                    value={formData.pisada}
+                    onChange={(e) => handleChange('pisada', e.target.value)}
+                    placeholder="Ex: Neutra"
                     disabled={isReadOnly}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
@@ -540,15 +783,120 @@ export function ProdutoCadastro({
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Coleção
+                    Altura Drop
                   </label>
                   <input
                     type="text"
-                    value={formData.colecao}
-                    onChange={(e) => handleChange('colecao', e.target.value)}
-                    placeholder="Ex: Verão 2026"
+                    value={formData.alturaDrop}
+                    onChange={(e) => handleChange('alturaDrop', e.target.value)}
+                    placeholder="Ex: 8mm"
                     disabled={isReadOnly}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Altura Salto
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.alturaSalto}
+                    onChange={(e) => handleChange('alturaSalto', e.target.value)}
+                    placeholder="Ex: 5cm"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Classificação Altura
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.classificacaoAltura}
+                    onChange={(e) => handleChange('classificacaoAltura', e.target.value)}
+                    placeholder="Ex: Médio"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Ocasião de Uso
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.ocasiaoUso}
+                    onChange={(e) => handleChange('ocasiaoUso', e.target.value)}
+                    placeholder="Ex: Casual"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Tecnologia
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.tecnologia}
+                    onChange={(e) => handleChange('tecnologia', e.target.value)}
+                    placeholder="Ex: EVA"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Peso (kg)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.peso}
+                    onChange={(e) => handleChange('peso', e.target.value)}
+                    placeholder="Ex: 0,35"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Descrição Técnica
+                  </label>
+                  <textarea
+                    value={formData.descricaoTecnica}
+                    onChange={(e) => handleChange('descricaoTecnica', e.target.value)}
+                    placeholder="Descrição técnica do produto"
+                    rows={3}
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300 resize-none"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Descrição Emocional
+                  </label>
+                  <textarea
+                    value={formData.descricaoEmocional}
+                    onChange={(e) => handleChange('descricaoEmocional', e.target.value)}
+                    placeholder="Descrição emocional do produto"
+                    rows={3}
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300 resize-none"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
                 </div>
@@ -886,6 +1234,10 @@ export function ProdutoCadastro({
                   </button>
                 )}
               </div>
+              <p className="text-white/50 text-xs mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                Para integrar ao ERP, use a posição numérica da grade (1–48, coluna TAMANHO_N) e o mesmo texto de
+                tamanho visual cadastrado em PRODUTOS_TAMANHOS para essa grade.
+              </p>
 
               {formData.barras.length === 0 ? (
                 <p className="text-white/60 text-center py-8" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
@@ -893,78 +1245,95 @@ export function ProdutoCadastro({
                 </p>
               ) : (
                 <div className="space-y-4">
-                  {formData.barras.map((barra, index) => (
-                    <div key={index} className="bg-white/5 rounded-xl p-5 border border-white/10">
-                      <div className="flex items-center justify-between mb-4">
-                        <span className="text-white font-medium" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                          Código #{index + 1}
-                        </span>
-                        {!isReadOnly && (
-                          <button onClick={() => handleRemoveBarra(index)} className="text-red-300 hover:text-red-100 transition-colors">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                  {formData.barras.map((barra, index) => {
+                    const gradeOpts = mergeCustomErpOption(gradeOptions, barra.grade);
+                    return (
+                      <div key={index} className="bg-white/5 rounded-xl p-5 border border-white/10">
+                        <div className="flex items-center justify-between mb-4">
+                          <span className="text-white font-medium" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                            Código #{index + 1}
+                          </span>
+                          {!isReadOnly && (
+                            <button onClick={() => handleRemoveBarra(index)} className="text-red-300 hover:text-red-100 transition-colors">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          <div>
+                            <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                              Código de Barras
+                            </label>
+                            <input
+                              type="text"
+                              value={barra.codigoBarra}
+                              onChange={(e) => handleBarraChange(index, 'codigoBarra', e.target.value)}
+                              placeholder="EAN/SKU"
+                              disabled={isReadOnly}
+                              className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
+                              style={{ fontFamily: 'Outfit, sans-serif' }}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                              Cor
+                            </label>
+                            <input
+                              type="text"
+                              value={barra.corProduto}
+                              onChange={(e) => handleBarraChange(index, 'corProduto', e.target.value)}
+                              placeholder="Cor"
+                              disabled={isReadOnly}
+                              className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
+                              style={{ fontFamily: 'Outfit, sans-serif' }}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                              Posição na grade (1–48)
+                            </label>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={barra.tamanho}
+                              onChange={(e) => handleBarraChange(index, 'tamanho', e.target.value)}
+                              placeholder="Ex.: 37"
+                              disabled={isReadOnly}
+                              className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
+                              style={{ fontFamily: 'Outfit, sans-serif' }}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                              Tamanho visual (grade)
+                            </label>
+                            {combosDisponiveis && gradeOptions.length > 0 ? (
+                              <Combobox
+                                value={comboboxValueFromStored(barra.grade, gradeOpts)}
+                                options={gradeOpts}
+                                onChange={(val) => handleBarraChange(index, 'grade', val ?? '')}
+                                placeholder={loadingCombos ? '...' : 'Grade ERP'}
+                                searchPlaceholder="Buscar grade..."
+                                disabled={isReadOnly || loadingCombos}
+                                buttonClassName={erpComboButtonClassSm}
+                                className="bg-white/10 backdrop-blur-xl border-white/20"
+                              />
+                            ) : (
+                              <input
+                                type="text"
+                                value={barra.grade}
+                                onChange={(e) => handleBarraChange(index, 'grade', e.target.value)}
+                                placeholder="Grade"
+                                disabled={isReadOnly}
+                                className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
+                                style={{ fontFamily: 'Outfit, sans-serif' }}
+                              />
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <div>
-                          <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                            Código de Barras
-                          </label>
-                          <input
-                            type="text"
-                            value={barra.codigoBarra}
-                            onChange={(e) => handleBarraChange(index, 'codigoBarra', e.target.value)}
-                            placeholder="EAN/SKU"
-                            disabled={isReadOnly}
-                            className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
-                            style={{ fontFamily: 'Outfit, sans-serif' }}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                            Cor
-                          </label>
-                          <input
-                            type="text"
-                            value={barra.corProduto}
-                            onChange={(e) => handleBarraChange(index, 'corProduto', e.target.value)}
-                            placeholder="Cor"
-                            disabled={isReadOnly}
-                            className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
-                            style={{ fontFamily: 'Outfit, sans-serif' }}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                            Tamanho
-                          </label>
-                          <input
-                            type="text"
-                            value={barra.tamanho}
-                            onChange={(e) => handleBarraChange(index, 'tamanho', e.target.value)}
-                            placeholder="P/M/G"
-                            disabled={isReadOnly}
-                            className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
-                            style={{ fontFamily: 'Outfit, sans-serif' }}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                            Grade
-                          </label>
-                          <input
-                            type="text"
-                            value={barra.grade}
-                            onChange={(e) => handleBarraChange(index, 'grade', e.target.value)}
-                            placeholder="Grade"
-                            disabled={isReadOnly}
-                            className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
-                            style={{ fontFamily: 'Outfit, sans-serif' }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

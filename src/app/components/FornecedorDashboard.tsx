@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { clearAuthSession, getAuthSession } from '../lib/auth-storage';
 import {
   ApiError,
+  enriquecerNcmResumosFornecedor,
   enviarProdutoParaCompras,
   getFornecedorByCgcCpf,
   listarMeusCadastrosProdutos,
@@ -79,7 +80,8 @@ export function FornecedorDashboard() {
 
       try {
         const data = await listarMeusCadastrosProdutos(session.token);
-        setProducts(data);
+        const comNcm = await enriquecerNcmResumosFornecedor(session.token, data);
+        setProducts(comNcm);
       } catch (error) {
         toast.error('Não foi possível carregar seus produtos.', {
           description: error instanceof ApiError || error instanceof Error ? error.message : 'Tente novamente mais tarde.',

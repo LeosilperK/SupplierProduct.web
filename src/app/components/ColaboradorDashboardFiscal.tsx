@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Layout } from './Layout';
 import { LogOut, CheckCircle, XCircle, Filter, Eye } from 'lucide-react';
@@ -6,7 +6,23 @@ import { ImageWithFallback } from './ui/image-with-fallback';
 import { toast } from 'sonner';
 import { ProdutoDetalhesModal } from './ProdutoDetalhesModal';
 import { FornecedorDetalhesModal } from './FornecedorDetalhesModal';
-import { ApiError, getFornecedorCadastroCompletoByCgcCpf, type FornecedorCadastroCompleto } from '../lib/supplier-api';
+import {
+  ApiError,
+  clearFiscalAnaliseDraft,
+  aprovarFiscal,
+  enriquecerNcmListaDetalheInterno,
+  integrarProdutoErp,
+  listarFornecedoresPendentesFiscal,
+  listarPendentesFiscal,
+  ncmPrincipalDoProduto,
+  obterFornecedorPreCadastro,
+  obterProdutoCadastroInterno,
+  reprovarFiscal,
+  type FornecedorPendenteFiscal,
+  type FornecedorPreCadastroDetalhe,
+  type ProdutoCadastroDetalhe,
+  type ProdutoPendenteFiscal,
+} from '../lib/supplier-api';
 
 interface Cor {
   codCor: string;
@@ -57,20 +73,28 @@ interface Product {
   precos?: Preco[];
   fotos?: Foto[];
   barras?: Barra[];
+  /** Análise fiscal (GET interno ou rascunho local). */
+  cest?: string;
+  tributOrigem?: string;
+  tributIcms?: string;
+  idExcecaoGrupo?: string;
+  classificacaoFiscalFinal?: string;
+  caracteristicaContabil?: string;
+  enviaLojaVarejo?: boolean;
+  enviaVarejoInternet?: boolean;
+  variaPrecoPorCor?: boolean;
+  obsFiscal?: string;
 }
 
 interface Fornecedor {
   id: number;
   nomeFornecedor: string;
   cgcCpf: string;
-  centroCusto: string;
-  tipo: string;
-  condicaoPgto: string;
-  moeda: string;
-  statusAprovacao: 'pendente' | 'aprovado' | 'reprovado';
+  statusFluxo: number;
   dataCadastro: string;
 }
 
+/** Alinhado ao enum StatusProdutoCadastro (backend). */
 const STATUS_FLUXO: { [key: number]: string } = {
   1: 'Pré-Cadastro Fornecedor',
   2: 'Aguardando Compras',
@@ -108,170 +132,186 @@ const getStatusColor = (status: number) => {
   }
 };
 
+function mapInternoToProduct(d: ProdutoCadastroDetalhe, nomeFornecedor: string): Product {
+  return {
+    id: d.id,
+    descProduto: d.descProduto,
+    descProdutoNf: d.descProdutoNf ?? '',
+    referFabricante: d.referFabricante ?? '',
+    ncm: ncmPrincipalDoProduto(d.ncm, d.cores) ?? '',
+    statusFluxo: d.statusFluxo,
+    dataCadastro: d.dataCadastro,
+    fornecedor: nomeFornecedor,
+    tipoProduto: d.tipoProduto ?? undefined,
+    fabricante: d.fabricante ?? undefined,
+    composicao: d.composicao ?? undefined,
+    grade: d.grade ?? undefined,
+    linha: d.linha ?? undefined,
+    griffe: d.griffe ?? undefined,
+    colecao: d.colecao ?? undefined,
+    obsFornecedor: d.obsFornecedor ?? undefined,
+    cores: (d.cores ?? []).map((c) => ({
+      codCor: c.codCor ?? '',
+      descCor: c.descCor ?? '',
+      origemCor: c.origemCor ?? '',
+      corFabricante: c.corFabricante ?? '',
+      ncm: c.ncm ?? '',
+    })),
+    precos: (d.precos ?? []).map((pr) => ({
+      codigoTabelaPreco: pr.codigoTabelaPreco ?? '',
+      preco: Number(pr.preco ?? 0),
+    })),
+    fotos: (d.fotos ?? []).map((f) => ({
+      corLinx: f.corLinx ?? '',
+      nomeArquivo: f.nomeArquivo ?? '',
+      caminhoArquivo: f.caminhoArquivo ?? '',
+      base64Foto: f.base64Foto ?? '',
+      ordemFoto: f.ordemFoto,
+    })),
+    barras: (d.barras ?? []).map((b) => ({
+      codigoBarra: b.codigoBarra ?? '',
+      corProduto: b.corProduto ?? '',
+      tamanho: b.tamanho ?? '',
+      grade: b.grade ?? '',
+    })),
+    cest: (d.cest ?? '').trim() || undefined,
+    tributOrigem: (d.tributOrigem ?? '').trim() || undefined,
+    tributIcms: (d.tributIcms ?? '').trim() || undefined,
+    idExcecaoGrupo: (d.idExcecaoGrupo ?? '').trim() || undefined,
+    classificacaoFiscalFinal: (d.classificacaoFiscalFinal ?? '').trim() || undefined,
+    caracteristicaContabil: (d.caracteristicaContabil ?? '').trim() || undefined,
+    enviaLojaVarejo: d.enviaLojaVarejo ?? undefined,
+    enviaVarejoInternet: d.enviaVarejoInternet ?? undefined,
+    variaPrecoPorCor: d.variaPrecoPorCor ?? undefined,
+    obsFiscal: (d.obsFiscal ?? '').trim() || undefined,
+  };
+}
+
 type FilterType = 'all' | 'aguardando' | 'analise' | 'aprovado' | 'integrado';
 type ViewType = 'produtos' | 'fornecedores';
+
+const FORNECEDOR_STATUS: Record<number, string> = {
+  1: 'Pré-cadastro',
+  2: 'Aguardando Fiscal',
+  3: 'Reprovado Fiscal',
+  4: 'Aprovado p/ Integração',
+  5: 'Integrado ERP',
+};
+
+const getFornecedorStatusColor = (status: number) => {
+  switch (status) {
+    case 2:
+      return 'bg-purple-500/20 text-purple-100 border-purple-400/30';
+    case 4:
+      return 'bg-green-500/20 text-green-100 border-green-400/30';
+    case 5:
+      return 'bg-emerald-500/20 text-emerald-100 border-emerald-400/30';
+    case 3:
+      return 'bg-red-500/20 text-red-100 border-red-400/30';
+    default:
+      return 'bg-gray-500/20 text-gray-100 border-gray-400/30';
+  }
+};
+
+const FORNECEDORES_FISCAL_CACHE_KEY = 'supplierproduct:fiscal:fornecedores-cache:v1';
 
 export function ColaboradorDashboardFiscal() {
   const navigate = useNavigate();
   const location = useLocation();
   const userName = location.state?.userName || 'Usuário';
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [viewType, setViewType] = useState<ViewType>('produtos');
   const [activeFilter, setActiveFilter] = useState<FilterType>('aguardando');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const [selectedFornecedor, setSelectedFornecedor] = useState<Fornecedor | null>(null);
-  const [fornecedorDetalhe, setFornecedorDetalhe] = useState<FornecedorCadastroCompleto | null>(null);
+  const [fornecedorDetalhe, setFornecedorDetalhe] = useState<FornecedorPreCadastroDetalhe | null>(null);
   const [isFornecedorModalOpen, setIsFornecedorModalOpen] = useState(false);
   const [isLoadingFornecedorDetalhe, setIsLoadingFornecedorDetalhe] = useState(false);
-  const [products, setProducts] = useState<Product[]>([
-    {
-      id: 1,
-      descProduto: 'Tenis Teste Atualizado',
-      descProdutoNf: 'Tenis Teste NF Atualizado',
-      referFabricante: 'REF999',
-      ncm: '64041100',
-      statusFluxo: 4,
-      dataCadastro: '2026-04-16T15:47:56.1108294',
-      fornecedor: 'TESTE API FORNECEDOR 3',
-      tipoProduto: 'Calçado Esportivo',
-      fabricante: 'Nike Brasil',
-      composicao: '60% Sintético, 40% Tecido',
-      grade: '36, 37, 38, 39, 40, 41, 42',
-      linha: 'Performance',
-      griffe: 'Nike',
-      colecao: 'Verão 2026',
-      obsFornecedor: 'Produto importado. Entrega em 15 dias úteis.',
-      cores: [
-        { codCor: '001', descCor: 'Preto', origemCor: 'Nacional', corFabricante: 'Black 001', ncm: '64041100' },
-        { codCor: '002', descCor: 'Branco', origemCor: 'Nacional', corFabricante: 'White 002', ncm: '64041100' },
-      ],
-      precos: [
-        { codigoTabelaPreco: 'TAB001', preco: 299.9 },
-        { codigoTabelaPreco: 'TAB002', preco: 349.9 },
-      ],
-      fotos: [
-        {
-          corLinx: '001',
-          nomeArquivo: 'tenis-preto-frente.jpg',
-          caminhoArquivo: 'produtos/tenis/tenis-preto-frente.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-          ordemFoto: 1,
-        },
-      ],
-      barras: [{ codigoBarra: '7891234567890', corProduto: 'Preto', tamanho: '40', grade: 'Adulto' }],
-    },
-    {
-      id: 2,
-      descProduto: 'Camisa Polo Premium',
-      descProdutoNf: 'Camisa Polo NF',
-      referFabricante: 'REF001',
-      ncm: '61051000',
-      statusFluxo: 5,
-      dataCadastro: '2026-04-15T10:30:00',
-      fornecedor: 'FORNECEDOR XYZ LTDA',
-      tipoProduto: 'Vestuário',
-      fabricante: 'Lacoste',
-      composicao: '100% Algodão Pima',
-      grade: 'P, M, G, GG',
-      linha: 'Classic',
-      griffe: 'Lacoste',
-      colecao: 'Primavera 2026',
-      obsFornecedor: 'Algodão peruano de alta qualidade. Lavagem a seco recomendada.',
-      cores: [{ codCor: '010', descCor: 'Azul Marinho', origemCor: 'Importado', corFabricante: 'Navy Blue', ncm: '61051000' }],
-      precos: [{ codigoTabelaPreco: 'TAB001', preco: 389.9 }],
-      fotos: [
-        {
-          corLinx: '010',
-          nomeArquivo: 'polo-azul-marinho.jpg',
-          caminhoArquivo: 'produtos/polo/polo-azul-marinho.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-          ordemFoto: 1,
-        },
-      ],
-      barras: [{ codigoBarra: '7891234567892', corProduto: 'Azul Marinho', tamanho: 'M', grade: 'Adulto' }],
-    },
-    {
-      id: 3,
-      descProduto: 'Calça Jeans Masculina',
-      descProdutoNf: 'Calça Jeans NF',
-      referFabricante: 'REF002',
-      ncm: '62034200',
-      statusFluxo: 7,
-      dataCadastro: '2026-04-14T08:15:00',
-      fornecedor: 'FORNECEDOR ABC S.A.',
-      tipoProduto: 'Vestuário',
-      fabricante: "Levi's",
-      composicao: '98% Algodão, 2% Elastano',
-      grade: '38, 40, 42, 44, 46',
-      linha: 'Skinny',
-      griffe: "Levi's",
-      colecao: 'Outono 2026',
-      obsFornecedor: 'Modelo slim fit com elasticidade. Stonewashed.',
-      cores: [{ codCor: '020', descCor: 'Azul Escuro', origemCor: 'Nacional', corFabricante: 'Dark Blue', ncm: '62034200' }],
-      precos: [{ codigoTabelaPreco: 'TAB001', preco: 259.9 }],
-      fotos: [],
-      barras: [{ codigoBarra: '7891234567895', corProduto: 'Azul Escuro', tamanho: '42', grade: 'Adulto' }],
-    },
-    {
-      id: 4,
-      descProduto: 'Jaqueta de Couro',
-      descProdutoNf: 'Jaqueta NF',
-      referFabricante: 'REF003',
-      ncm: '42031000',
-      statusFluxo: 6,
-      dataCadastro: '2026-04-13T14:20:00',
-      fornecedor: 'COURO PREMIUM LTDA',
-    },
-  ]);
+  const [products, setProducts] = useState<Product[]>([]);
 
-  const [fornecedores, setFornecedores] = useState<Fornecedor[]>([
-    {
-      id: 1,
-      nomeFornecedor: 'TEXTIL PREMIUM LTDA',
-      cgcCpf: '12.345.678/0001-90',
-      centroCusto: '29100',
-      tipo: 'FABRICANTE',
-      condicaoPgto: '30/60 dias',
-      moeda: 'R$',
-      statusAprovacao: 'pendente',
-      dataCadastro: '2026-04-23T14:30:00',
-    },
-    {
-      id: 2,
-      nomeFornecedor: 'CALÇADOS ELITE S.A.',
-      cgcCpf: '98.765.432/0001-11',
-      centroCusto: '29200',
-      tipo: 'DISTRIBUIDOR',
-      condicaoPgto: '45 dias',
-      moeda: 'R$',
-      statusAprovacao: 'pendente',
-      dataCadastro: '2026-04-22T10:15:00',
-    },
-    {
-      id: 3,
-      nomeFornecedor: 'CONFECÇÕES MODERNAS EIRELI',
-      cgcCpf: '55.666.777/0001-88',
-      centroCusto: '29100',
-      tipo: 'FABRICANTE',
-      condicaoPgto: '30 dias',
-      moeda: 'R$',
-      statusAprovacao: 'aprovado',
-      dataCadastro: '2026-04-20T16:45:00',
-    },
-    {
-      id: 4,
-      nomeFornecedor: 'ACESSÓRIOS FASHION LTDA',
-      cgcCpf: '22.333.444/0001-55',
-      centroCusto: '29300',
-      tipo: 'IMPORTADOR',
-      condicaoPgto: '60 dias',
-      moeda: 'USD',
-      statusAprovacao: 'reprovado',
-      dataCadastro: '2026-04-19T09:20:00',
-    },
-  ]);
+  const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
+  const [fornecedorLookupId, setFornecedorLookupId] = useState<string>('');
+  const [isLookingUpFornecedor, setIsLookingUpFornecedor] = useState(false);
+  const [detailLoadingId, setDetailLoadingId] = useState<number | null>(null);
+  const [integrandoErpId, setIntegrandoErpId] = useState<number | null>(null);
+
+  const loadFiscalPendencias = useCallback(async () => {
+    try {
+      setLoadError(null);
+      const [produtosApi, fornecedoresApi] = await Promise.all([
+        listarPendentesFiscal(),
+        listarFornecedoresPendentesFiscal(),
+      ]);
+
+      const mapped = (produtosApi ?? []).map((p: ProdutoPendenteFiscal) => ({
+        id: p.id,
+        descProduto: p.descProduto,
+        descProdutoNf: p.descProdutoNf ?? '',
+        referFabricante: p.referFabricante ?? '',
+        ncm: p.ncm ?? '',
+        statusFluxo: p.statusFluxo,
+        dataCadastro: p.dataCadastro,
+        fornecedor: p.nomeFornecedor,
+      }));
+      const enriched = await enriquecerNcmListaDetalheInterno(mapped);
+      setProducts(enriched);
+
+        const fromApi: Fornecedor[] = (fornecedoresApi ?? []).map((f: FornecedorPendenteFiscal) => ({
+          id: f.id,
+          nomeFornecedor: f.nomeCliFor,
+          cgcCpf: f.cgcCpf,
+          statusFluxo: f.statusFluxo,
+          dataCadastro: f.dataCadastro,
+        }));
+
+        const cachedRaw = typeof window !== 'undefined' ? window.localStorage.getItem(FORNECEDORES_FISCAL_CACHE_KEY) : null;
+        const cached: Fornecedor[] = cachedRaw ? (JSON.parse(cachedRaw) as Fornecedor[]) : [];
+
+        // Mantém no dashboard também itens carregados por ID, além dos pendentes do fiscal.
+        // (2=AguardandoFiscal, 4=AprovadoParaIntegracao, 5=IntegradoErp)
+        const cachedKeep = (cached ?? []).filter((x) => x && [2, 4, 5].includes(x.statusFluxo));
+        const merged = [...cachedKeep, ...fromApi].reduce<Fornecedor[]>((acc, item) => {
+          const idx = acc.findIndex((x) => x.id === item.id);
+          if (idx >= 0) acc[idx] = { ...acc[idx], ...item };
+          else acc.push(item);
+          return acc;
+        }, []);
+
+      setFornecedores(merged);
+    } catch (error) {
+      const message =
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : 'Tente novamente em instantes.';
+
+      // Quando a API devolve 500 nos endpoints internos, o dashboard não consegue listar
+      // fornecedores/produtos pendentes. Mostramos um aviso explícito para não parecer que
+      // os cadastros "sumiram".
+      if (error instanceof ApiError && error.status === 500) {
+        setLoadError(
+          'A API retornou erro interno ao listar pendências do fiscal (500). ' +
+            'Sem corrigir a API, não é possível carregar a lista de pendências — por isso os últimos cadastros não aparecem aqui.',
+        );
+      } else if (error instanceof ApiError && error.status === 401) {
+        setLoadError(
+          'Não autorizado (401) ao listar pendências. Verifique se você está autenticado e se o backend aceita Windows Auth para esses endpoints.',
+        );
+      } else {
+        setLoadError(`Não foi possível carregar pendências: ${message}`);
+      }
+
+      toast.error('Não foi possível carregar pendências do fiscal.', {
+        description: message,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadFiscalPendencias();
+  }, [loadFiscalPendencias]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -284,68 +324,133 @@ export function ColaboradorDashboardFiscal() {
     });
   };
 
-  const handleAprovar = (productId?: number) => {
+  const handleAprovar = async (productId?: number) => {
     const id = productId || selectedProduct?.id;
     if (!id) return;
 
-    setProducts((prevProducts) => prevProducts.map((product) => (product.id === id ? { ...product, statusFluxo: 6 } : product)));
-
-    toast.success('Produto aprovado!', {
-      description: 'Produto encaminhado para integração no ERP.',
-      duration: 3000,
-    });
-  };
-
-  const handleReprovar = (productId?: number) => {
-    const id = productId || selectedProduct?.id;
-    if (!id) return;
-
-    setProducts((prevProducts) => prevProducts.map((product) => (product.id === id ? { ...product, statusFluxo: 9 } : product)));
-
-    toast.error('Produto reprovado', {
-      description: 'Produto retornado ao fornecedor com status de reprovação fiscal.',
-      duration: 3000,
-    });
-  };
-
-  const handleIniciarAnalise = (productId: number) => {
-    const product = products.find((p) => p.id === productId);
-    if (product) {
-      setSelectedProduct(product);
-      setIsModalOpen(true);
-    }
-  };
-
-  const handleIniciarAnaliseConfirm = () => {
-    if (selectedProduct) {
-      setProducts((prevProducts) => prevProducts.map((product) => (product.id === selectedProduct.id ? { ...product, statusFluxo: 5 } : product)));
-
-      toast.info('Análise iniciada', {
-        description: 'Produto movido para Em Análise Fiscal.',
-        duration: 2000,
+    try {
+      const res = await aprovarFiscal(id);
+      if (res.integradoNoErp === false) {
+        toast.warning('Aprovado para integração (status 6)', {
+          description:
+            res.erroIntegracao != null && res.erroIntegracao !== ''
+              ? `A integração automática ao ERP falhou: ${res.erroIntegracao}. Use «Integrar ERP» na lista.`
+              : 'A integração automática ao ERP falhou. Use «Integrar ERP» na lista.',
+          duration: 9000,
+        });
+      } else {
+        toast.success(res.mensagem ?? 'Produto aprovado pelo fiscal!', {
+          description:
+            res.statusFluxo === 7
+              ? 'Status 7 — produto integrado ao ERP.'
+              : `Status atual: ${res.statusFluxo}.`,
+          duration: 4000,
+        });
+      }
+      setIsModalOpen(false);
+      setSelectedProduct(null);
+      clearFiscalAnaliseDraft(id);
+      await loadFiscalPendencias();
+    } catch (error) {
+      toast.error('Não foi possível aprovar o produto.', {
+        description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
       });
+      throw error;
     }
   };
 
-  const handleAprovarFornecedor = (fornecedorId: number) => {
-    setFornecedores((prevFornecedores) =>
-      prevFornecedores.map((fornecedor) => (fornecedor.id === fornecedorId ? { ...fornecedor, statusAprovacao: 'aprovado' } : fornecedor)),
-    );
+  const handleReprovar = async (productId?: number) => {
+    const id = productId || selectedProduct?.id;
+    if (!id) return;
 
-    toast.success('Fornecedor aprovado!', {
-      description: 'Fornecedor liberado para cadastrar produtos.',
-      duration: 3000,
+    const motivo = window.prompt('Informe o motivo da reprovação fiscal:');
+    if (motivo === null) {
+      throw new Error('cancelado');
+    }
+    if (!motivo.trim()) {
+      toast.error('Motivo obrigatório para reprovar.');
+      throw new Error('validação');
+    }
+
+    try {
+      await reprovarFiscal(id, { motivo: motivo.trim() });
+      toast.error('Produto reprovado pelo fiscal.', {
+        description: 'Status 9 — Reprovado fiscal.',
+        duration: 4000,
+      });
+      setIsModalOpen(false);
+      setSelectedProduct(null);
+      clearFiscalAnaliseDraft(id);
+      await loadFiscalPendencias();
+    } catch (error) {
+      if (error instanceof Error && error.message === 'cancelado') return;
+      if (error instanceof Error && error.message === 'validação') throw error;
+      toast.error('Não foi possível reprovar o produto.', {
+        description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
+      });
+      throw error;
+    }
+  };
+
+  const handleIntegrarErpProduto = async (productId: number) => {
+    setIntegrandoErpId(productId);
+    try {
+      await integrarProdutoErp(productId);
+      clearFiscalAnaliseDraft(productId);
+      toast.success('Produto integrado ao ERP.', { duration: 4000 });
+      await loadFiscalPendencias();
+    } catch (error) {
+      toast.error('Não foi possível integrar o produto ao ERP.', {
+        description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIntegrandoErpId(null);
+    }
+  };
+
+  const handleIniciarAnalise = async (productId: number) => {
+    const row = products.find((p) => p.id === productId);
+    if (!row) return;
+
+    setDetailLoadingId(productId);
+    try {
+      const detalhe = await obterProdutoCadastroInterno(productId);
+      const mapped = mapInternoToProduct(detalhe, row.fornecedor);
+      setSelectedProduct(mapped);
+      setIsModalOpen(true);
+    } catch (error) {
+      toast.error('Não foi possível carregar o cadastro completo do produto.', {
+        description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setDetailLoadingId(null);
+    }
+  };
+
+  const persistFornecedoresCache = (items: Fornecedor[]) => {
+    try {
+      window.localStorage.setItem(FORNECEDORES_FISCAL_CACHE_KEY, JSON.stringify(items));
+    } catch {
+      // ignore
+    }
+  };
+
+  const upsertFornecedor = (item: Fornecedor) => {
+    setFornecedores((prev) => {
+      const next = [...prev];
+      const idx = next.findIndex((x) => x.id === item.id);
+      if (idx >= 0) next[idx] = { ...next[idx], ...item };
+      else next.unshift(item);
+      persistFornecedoresCache(next);
+      return next;
     });
   };
 
-  const handleReprovarFornecedor = (fornecedorId: number) => {
-    setFornecedores((prevFornecedores) =>
-      prevFornecedores.map((fornecedor) => (fornecedor.id === fornecedorId ? { ...fornecedor, statusAprovacao: 'reprovado' } : fornecedor)),
-    );
-
-    toast.error('Fornecedor reprovado', {
-      description: 'Cadastro do fornecedor foi recusado.',
-      duration: 3000,
+  const updateFornecedorStatus = (id: number, statusFluxo: number) => {
+    setFornecedores((prev) => {
+      const next = prev.map((f) => (f.id === id ? { ...f, statusFluxo } : f));
+      persistFornecedoresCache(next);
+      return next;
     });
   };
 
@@ -356,7 +461,7 @@ export function ColaboradorDashboardFiscal() {
     setFornecedorDetalhe(null);
 
     try {
-      const detalhe = await getFornecedorCadastroCompletoByCgcCpf(fornecedor.cgcCpf);
+      const detalhe = await obterFornecedorPreCadastro(fornecedor.id);
       setFornecedorDetalhe(detalhe);
     } catch (error) {
       toast.error('Não foi possível carregar o cadastro completo do fornecedor.', {
@@ -437,6 +542,17 @@ export function ColaboradorDashboardFiscal() {
               Fornecedores
             </button>
           </div>
+
+          {loadError && (
+            <div className="mb-8 bg-white/10 backdrop-blur-xl rounded-2xl p-6 border-2 border-amber-300/30 shadow-xl">
+              <p className="text-amber-100 text-lg font-semibold" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                Não foi possível carregar as pendências do fiscal
+              </p>
+              <p className="text-amber-100/80 text-sm mt-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                {loadError}
+              </p>
+            </div>
+          )}
 
           {viewType === 'produtos' && (
             <>
@@ -531,6 +647,9 @@ export function ColaboradorDashboardFiscal() {
                     <p className="text-white/60 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
                       {filteredProducts.length} produto(s) encontrado(s)
                     </p>
+                    <p className="text-white/50 text-xs mt-2 max-w-3xl" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                      Fluxo obrigatório na API: 4 (aguardando) → salvar análise → 5 (em análise) → aprovar → 6 e integração automática ao ERP → 7. A lista inclui até 500 itens nos status 4 a 7 (ordenados pela última atualização). Se a integração automática falhar, use «Integrar ERP» na linha em status 6.
+                    </p>
                   </div>
                 </div>
 
@@ -610,17 +729,29 @@ export function ColaboradorDashboardFiscal() {
                               <div className="flex items-center justify-center gap-2">
                                 {product.statusFluxo === 4 && (
                                   <button
-                                    onClick={() => handleIniciarAnalise(product.id)}
-                                    className="text-white bg-indigo-500/30 hover:bg-indigo-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-indigo-400/30 text-xs"
+                                    type="button"
+                                    disabled={detailLoadingId === product.id}
+                                    onClick={() => void handleIniciarAnalise(product.id)}
+                                    className="text-white bg-indigo-500/30 hover:bg-indigo-500/50 disabled:opacity-50 transition-all duration-200 px-3 py-2 rounded-lg border border-indigo-400/30 text-xs"
                                     style={{ fontFamily: 'Outfit, sans-serif' }}
                                   >
-                                    Iniciar Análise
+                                    {detailLoadingId === product.id ? 'Carregando…' : 'Analisar fiscal'}
                                   </button>
                                 )}
                                 {product.statusFluxo === 5 && (
                                   <>
                                     <button
-                                      onClick={() => handleAprovar(product.id)}
+                                      type="button"
+                                      disabled={detailLoadingId === product.id}
+                                      onClick={() => void handleIniciarAnalise(product.id)}
+                                      className="text-white bg-indigo-500/20 hover:bg-indigo-500/40 disabled:opacity-50 transition-all duration-200 px-3 py-2 rounded-lg border border-indigo-400/25 text-xs"
+                                      style={{ fontFamily: 'Outfit, sans-serif' }}
+                                    >
+                                      {detailLoadingId === product.id ? 'Carregando…' : 'Revisar análise'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleAprovar(product.id)}
                                       className="text-white bg-green-500/30 hover:bg-green-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-green-400/30 text-xs flex items-center gap-1"
                                       style={{ fontFamily: 'Outfit, sans-serif' }}
                                     >
@@ -628,7 +759,8 @@ export function ColaboradorDashboardFiscal() {
                                       Aprovar
                                     </button>
                                     <button
-                                      onClick={() => handleReprovar(product.id)}
+                                      type="button"
+                                      onClick={() => void handleReprovar(product.id)}
                                       className="text-white bg-red-500/30 hover:bg-red-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-red-400/30 text-xs flex items-center gap-1"
                                       style={{ fontFamily: 'Outfit, sans-serif' }}
                                     >
@@ -638,9 +770,22 @@ export function ColaboradorDashboardFiscal() {
                                   </>
                                 )}
                                 {(product.statusFluxo === 6 || product.statusFluxo === 7) && (
-                                  <span className="text-white/40 text-xs" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                                    {product.statusFluxo === 6 ? 'Aguardando integração' : 'Finalizado'}
-                                  </span>
+                                  <div className="flex flex-col items-center gap-2 sm:flex-row sm:justify-center">
+                                    {product.statusFluxo === 6 && (
+                                      <button
+                                        type="button"
+                                        disabled={integrandoErpId === product.id}
+                                        onClick={() => void handleIntegrarErpProduto(product.id)}
+                                        className="text-white bg-emerald-500/35 hover:bg-emerald-500/55 disabled:opacity-50 transition-all duration-200 px-3 py-2 rounded-lg border border-emerald-400/35 text-xs"
+                                        style={{ fontFamily: 'Outfit, sans-serif' }}
+                                      >
+                                        {integrandoErpId === product.id ? 'Integrando…' : 'Integrar ERP'}
+                                      </button>
+                                    )}
+                                    <span className="text-white/40 text-xs text-center" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                                      {product.statusFluxo === 6 ? 'Aguardando integração ou reprocessamento' : 'Integrado ao ERP'}
+                                    </span>
+                                  </div>
                                 )}
                               </div>
                             </td>
@@ -662,9 +807,54 @@ export function ColaboradorDashboardFiscal() {
                     Fornecedores Cadastrados
                   </h2>
                   <p className="text-white/60 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                    {fornecedores.filter((f) => f.statusAprovacao === 'pendente').length} fornecedor(es) aguardando aprovação
+                    {fornecedores.filter((f) => f.statusFluxo === 2).length} fornecedor(es) aguardando fiscal
                   </p>
                 </div>
+              </div>
+
+              <div className="mb-6 flex flex-col md:flex-row gap-3 md:items-end">
+                <div className="flex-1">
+                  <label className="block text-white/70 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                    Buscar por ID do pré-cadastro (para visualizar aprovados/integração)
+                  </label>
+                  <input
+                    value={fornecedorLookupId}
+                    onChange={(e) => setFornecedorLookupId(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    placeholder="Ex.: 19"
+                    className="w-full px-4 py-3 bg-white/15 backdrop-blur-sm border border-white/25 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/60 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+                <button
+                  disabled={isLookingUpFornecedor || fornecedorLookupId.trim().length === 0}
+                  onClick={async () => {
+                    const id = Number(fornecedorLookupId);
+                    if (!id) return;
+                    setIsLookingUpFornecedor(true);
+                    try {
+                      const detalhe = await obterFornecedorPreCadastro(id);
+                      upsertFornecedor({
+                        id: detalhe.id,
+                        nomeFornecedor: detalhe.nomeCliFor || detalhe.razaoSocial || `Fornecedor #${detalhe.id}`,
+                        cgcCpf: detalhe.cgcCpf,
+                        statusFluxo: detalhe.statusFluxo,
+                        dataCadastro: detalhe.dataCadastro,
+                      });
+                      toast.success('Fornecedor carregado no dashboard.');
+                      setFornecedorLookupId('');
+                    } catch (e) {
+                      toast.error('Não foi possível carregar o fornecedor.', {
+                        description: e instanceof Error ? e.message : 'Tente novamente.',
+                      });
+                    } finally {
+                      setIsLookingUpFornecedor(false);
+                    }
+                  }}
+                  className="px-6 py-3 bg-white text-[#ca0404] rounded-xl font-semibold hover:bg-white/90 disabled:bg-white/20 disabled:text-white/40 disabled:cursor-not-allowed transition-all duration-300"
+                  style={{ fontFamily: 'Outfit, sans-serif' }}
+                >
+                  {isLookingUpFornecedor ? 'Buscando...' : 'Carregar'}
+                </button>
               </div>
 
               <div className="overflow-x-auto rounded-xl border-2 border-white/20">
@@ -681,12 +871,6 @@ export function ColaboradorDashboardFiscal() {
                         CNPJ/CPF
                       </th>
                       <th className="text-left px-4 py-4 text-white font-semibold" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                        Tipo
-                      </th>
-                      <th className="text-left px-4 py-4 text-white font-semibold" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                        Condição Pgto
-                      </th>
-                      <th className="text-left px-4 py-4 text-white font-semibold" style={{ fontFamily: 'Outfit, sans-serif' }}>
                         Status
                       </th>
                       <th className="text-left px-4 py-4 text-white font-semibold" style={{ fontFamily: 'Outfit, sans-serif' }}>
@@ -700,7 +884,7 @@ export function ColaboradorDashboardFiscal() {
                   <tbody>
                     {fornecedores.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="px-6 py-12 text-center">
+                        <td colSpan={6} className="px-6 py-12 text-center">
                           <p className="text-white/60 text-lg" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
                             Nenhum fornecedor cadastrado.
                           </p>
@@ -722,26 +906,14 @@ export function ColaboradorDashboardFiscal() {
                           <td className="px-4 py-5 text-white/80 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
                             {fornecedor.cgcCpf}
                           </td>
-                          <td className="px-4 py-5 text-white/80" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                            {fornecedor.tipo}
-                          </td>
-                          <td className="px-4 py-5 text-white/80 text-sm" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                            {fornecedor.condicaoPgto}
-                          </td>
                           <td className="px-4 py-5">
                             <span
-                              className={`inline-flex px-3 py-1 rounded-full text-xs font-medium border ${
-                                fornecedor.statusAprovacao === 'pendente'
-                                  ? 'bg-yellow-500/20 text-yellow-100 border-yellow-400/30'
-                                  : fornecedor.statusAprovacao === 'aprovado'
-                                    ? 'bg-green-500/20 text-green-100 border-green-400/30'
-                                    : 'bg-red-500/20 text-red-100 border-red-400/30'
-                              }`}
+                              className={`inline-flex px-3 py-1 rounded-full text-xs font-medium border ${getFornecedorStatusColor(
+                                fornecedor.statusFluxo,
+                              )}`}
                               style={{ fontFamily: 'Outfit, sans-serif' }}
                             >
-                              {fornecedor.statusAprovacao === 'pendente' && 'Pendente Aprovação'}
-                              {fornecedor.statusAprovacao === 'aprovado' && 'Aprovado'}
-                              {fornecedor.statusAprovacao === 'reprovado' && 'Reprovado'}
+                              {FORNECEDOR_STATUS[fornecedor.statusFluxo] ?? 'Desconhecido'}
                             </span>
                           </td>
                           <td className="px-4 py-5 text-white/70 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
@@ -749,7 +921,7 @@ export function ColaboradorDashboardFiscal() {
                           </td>
                           <td className="px-4 py-5">
                             <div className="flex items-center justify-center gap-2">
-                              {fornecedor.statusAprovacao === 'pendente' && (
+                              {(fornecedor.statusFluxo === 2 || fornecedor.statusFluxo === 4) && (
                                 <>
                                   <button
                                     onClick={() => handleVerDetalhesFornecedor(fornecedor)}
@@ -757,29 +929,13 @@ export function ColaboradorDashboardFiscal() {
                                     style={{ fontFamily: 'Outfit, sans-serif' }}
                                   >
                                     <Eye className="w-3 h-3" />
-                                    Ver detalhes
-                                  </button>
-                                  <button
-                                    onClick={() => handleAprovarFornecedor(fornecedor.id)}
-                                    className="text-white bg-green-500/30 hover:bg-green-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-green-400/30 text-xs flex items-center gap-1"
-                                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                                  >
-                                    <CheckCircle className="w-3 h-3" />
-                                    Aprovar
-                                  </button>
-                                  <button
-                                    onClick={() => handleReprovarFornecedor(fornecedor.id)}
-                                    className="text-white bg-red-500/30 hover:bg-red-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-red-400/30 text-xs flex items-center gap-1"
-                                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                                  >
-                                    <XCircle className="w-3 h-3" />
-                                    Reprovar
+                                    {fornecedor.statusFluxo === 4 ? 'Editar' : 'Ver detalhes'}
                                   </button>
                                 </>
                               )}
-                              {fornecedor.statusAprovacao !== 'pendente' && (
+                              {fornecedor.statusFluxo !== 2 && fornecedor.statusFluxo !== 4 && (
                                 <span className="text-white/40 text-xs" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                                  {fornecedor.statusAprovacao === 'aprovado' ? 'Finalizado' : 'Recusado'}
+                                  {FORNECEDOR_STATUS[fornecedor.statusFluxo] ?? 'Finalizado'}
                                 </span>
                               )}
                             </div>
@@ -797,6 +953,7 @@ export function ColaboradorDashboardFiscal() {
 
       {selectedProduct && (
         <ProdutoDetalhesModal
+          key={selectedProduct.id}
           product={selectedProduct}
           isOpen={isModalOpen}
           onClose={() => {
@@ -805,7 +962,22 @@ export function ColaboradorDashboardFiscal() {
           }}
           onAprovar={() => handleAprovar()}
           onReprovar={() => handleReprovar()}
-          onIniciarAnalise={handleIniciarAnaliseConfirm}
+          onMutationSuccess={() => {
+            const id = selectedProduct?.id;
+            void (async () => {
+              await loadFiscalPendencias();
+              if (id) {
+                try {
+                  const d = await obterProdutoCadastroInterno(id);
+                  setSelectedProduct((prev) =>
+                    prev && prev.id === id ? mapInternoToProduct(d, prev.fornecedor) : prev,
+                  );
+                } catch {
+                  /* ignore */
+                }
+              }
+            })();
+          }}
           showActions
           departamento="fiscal"
         />
@@ -838,6 +1010,7 @@ export function ColaboradorDashboardFiscal() {
                 setSelectedFornecedor(null);
                 setFornecedorDetalhe(null);
               }}
+              onStatusChange={updateFornecedorStatus}
             />
           )}
         </>

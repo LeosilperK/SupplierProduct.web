@@ -1,16 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Layout } from './Layout';
-import { ArrowLeft, Building2, FileText, MapPin, Phone, DollarSign, Package } from 'lucide-react';
+import { ArrowLeft, Building2, FileText, MapPin, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 import { CepError, pesquisacep } from '../lib/viacep';
 import {
-  cadastrarFornecedor,
-  criarAcessoFornecedor,
-  getFornecedorByCgcCpf,
   sanitizeDocument,
-  type CadastroFornecedorPayload,
+  criarPreCadastroFornecedor,
+  listarErpMunicipios,
+  listarErpPaises,
+  type ComboErp,
+  type FornecedorPreCadastroPayload,
 } from '../lib/supplier-api';
+import { Combobox, type ComboboxOption } from './ui/combobox';
 
 interface FornecedorFormData {
   nomeCliFor: string;
@@ -18,7 +20,6 @@ interface FornecedorFormData {
   cgcCpf: string;
   pjPf: number;
   rgIe: string;
-  inscricaoMunicipal: string;
   cep: string;
   endereco: string;
   cidade: string;
@@ -31,23 +32,7 @@ interface FornecedorFormData {
   email: string;
   numero: string;
   complemento: string;
-  tipo: string;
-  centroCusto: string;
-  condicaoPgto: string;
-  moeda: string;
-  ctbContaContabil: string;
-  lxMetodoPagamento: number | null;
-  forneceMatConsumo: boolean;
-  forneceMateriais: boolean;
-  forneceProdAcab: boolean;
-  beneficiador: boolean;
-  forneceOutros: boolean;
-  prop00014: string;
-  prop00035: string;
-  prop00123: string;
-  login: string;
-  senha: string;
-  confirmarSenha: string;
+  obsFornecedor: string;
 }
 
 export function FornecedorCadastro() {
@@ -55,13 +40,17 @@ export function FornecedorCadastro() {
   const location = useLocation();
   const cnpjFromState = location.state?.cnpj || '';
 
+  const [loadingCombos, setLoadingCombos] = useState(false);
+  const [combosDisponiveis, setCombosDisponiveis] = useState(false);
+  const [municipiosOptions, setMunicipiosOptions] = useState<ComboboxOption[]>([]);
+  const [paisesOptions, setPaisesOptions] = useState<ComboboxOption[]>([]);
+
   const [formData, setFormData] = useState<FornecedorFormData>({
     nomeCliFor: '',
     razaoSocial: '',
     cgcCpf: cnpjFromState,
     pjPf: 0,
     rgIe: '',
-    inscricaoMunicipal: '',
     cep: '',
     endereco: '',
     cidade: '',
@@ -74,29 +63,39 @@ export function FornecedorCadastro() {
     email: '',
     numero: '',
     complemento: '',
-    tipo: '',
-    centroCusto: '',
-    condicaoPgto: '',
-    moeda: 'BRL',
-    ctbContaContabil: '',
-    lxMetodoPagamento: null,
-    forneceMatConsumo: false,
-    forneceMateriais: false,
-    forneceProdAcab: false,
-    beneficiador: false,
-    forneceOutros: false,
-    prop00014: '',
-    prop00035: '',
-    prop00123: '',
-    login: '',
-    senha: '',
-    confirmarSenha: '',
+    obsFornecedor: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCepLoading, setIsCepLoading] = useState(false);
   const cepNumbers = useMemo(() => formData.cep.replace(/\D/g, ''), [formData.cep]);
 
   const canLookupCep = useMemo(() => cepNumbers.length === 8, [cepNumbers.length]);
+
+  const comboErpToOptions = (items: ComboErp[]): ComboboxOption[] =>
+    (items ?? [])
+      .filter((x) => (x?.codigo ?? '').toString().trim().length > 0)
+      .map((x) => ({
+        value: String(x.codigo),
+        label: x.descricao?.toString() ?? String(x.codigo),
+      }));
+
+  useEffect(() => {
+    const loadCombos = async () => {
+      setLoadingCombos(true);
+      try {
+        const [municipios, paises] = await Promise.all([listarErpMunicipios(null), listarErpPaises()]);
+        setMunicipiosOptions(comboErpToOptions(municipios));
+        setPaisesOptions(comboErpToOptions(paises));
+        setCombosDisponiveis(true);
+      } catch {
+        setCombosDisponiveis(false);
+      } finally {
+        setLoadingCombos(false);
+      }
+    };
+
+    void loadCombos();
+  }, []);
 
   useEffect(() => {
     if (!canLookupCep) {
@@ -167,81 +166,59 @@ export function FornecedorCadastro() {
   };
 
   const handleSubmit = async () => {
-    if (formData.senha !== formData.confirmarSenha) {
-      toast.error('As senhas não conferem.');
+    const documento = sanitizeDocument(formData.cgcCpf);
+    const nomeCliForTrim = formData.nomeCliFor.trim();
+    const razaoSocialTrim = formData.razaoSocial.trim();
+    const emailTrim = formData.email.trim();
+
+    if (!documento || (documento.length !== 11 && documento.length !== 14)) {
+      toast.error('CNPJ/CPF inválido.', { description: 'Volte e informe um documento válido.' });
+      return;
+    }
+
+    if (!razaoSocialTrim.length || !nomeCliForTrim.length) {
+      toast.error('Preencha os campos obrigatórios.', {
+        description: 'Razão Social e Nome Fantasia são obrigatórios.',
+      });
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const cadastroPayload: CadastroFornecedorPayload = {
-        nomeCliFor: formData.nomeCliFor,
-        razaoSocial: formData.razaoSocial,
-        cgcCpf: formData.cgcCpf,
+      const payload: FornecedorPreCadastroPayload = {
+        nomeCliFor: nomeCliForTrim,
+        razaoSocial: razaoSocialTrim,
+        cgcCpf: documento,
         pjPf: formData.pjPf,
-        rgIe: formData.rgIe,
-        cep: formData.cep,
-        endereco: formData.endereco,
-        cidade: formData.cidade,
-        bairro: formData.bairro,
-        uf: formData.uf,
-        pais: formData.pais,
-        ddi: formData.ddi,
-        ddd1: formData.ddd1,
-        ddd2: formData.ddd2,
-        email: formData.email,
-        numero: formData.numero,
-        complemento: formData.complemento,
-        tipo: formData.tipo,
-        centroCusto: formData.centroCusto,
-        condicaoPgto: formData.condicaoPgto,
-        moeda: formData.moeda,
-        ctbContaContabil: formData.ctbContaContabil,
-        lxMetodoPagamento: formData.lxMetodoPagamento,
-        forneceMatConsumo: formData.forneceMatConsumo,
-        forneceMateriais: formData.forneceMateriais,
-        forneceProdAcab: formData.forneceProdAcab,
-        beneficiador: formData.beneficiador,
-        forneceOutros: formData.forneceOutros,
-        prop00014: formData.prop00014 || '1',
-        prop00035: formData.prop00035 || 'LEADTIME',
-        prop00123: formData.prop00123 || '0',
+        rgIe: formData.rgIe.trim().length ? formData.rgIe.trim() : null,
+        cep: formData.cep.trim().length ? formData.cep.trim() : null,
+        endereco: formData.endereco.trim().length ? formData.endereco.trim() : null,
+        cidade: formData.cidade.trim().length ? formData.cidade.trim() : null,
+        bairro: formData.bairro.trim().length ? formData.bairro.trim() : null,
+        uf: formData.uf.trim().length ? formData.uf.trim().toUpperCase() : null,
+        pais: formData.pais.trim().length ? formData.pais.trim() : null,
+        ddi: formData.ddi.trim().length ? formData.ddi.trim() : null,
+        ddd1: formData.ddd1.trim().length ? formData.ddd1.trim() : null,
+        ddd2: formData.ddd2.trim().length ? formData.ddd2.trim() : null,
+        email: emailTrim.length ? emailTrim : null,
+        numero: formData.numero.trim().length ? formData.numero.trim() : null,
+        complemento: formData.complemento.trim().length ? formData.complemento.trim() : null,
+        obsFornecedor: formData.obsFornecedor.trim().length ? formData.obsFornecedor.trim() : null,
       };
 
-      const cadastroResponse = await cadastrarFornecedor(cadastroPayload);
+      await criarPreCadastroFornecedor(payload);
 
-      if (!cadastroResponse.sucesso) {
-        throw new Error(cadastroResponse.mensagem || 'Não foi possível cadastrar o fornecedor.');
-      }
-
-      const acessoResponse = await criarAcessoFornecedor({
-        cgcCpf: formData.cgcCpf,
-        login: formData.login,
-        senha: formData.senha,
-      });
-
-      if (!acessoResponse.sucesso) {
-        throw new Error(acessoResponse.mensagem || 'Não foi possível criar o acesso do fornecedor.');
-      }
-
-      const fornecedorData = await getFornecedorByCgcCpf(sanitizeDocument(formData.cgcCpf));
-
-      toast.success('Cadastro realizado com sucesso!', {
-        description: 'Faça login para acessar o sistema.',
+      toast.success('Pré-cadastro enviado com sucesso!', {
+        description: 'Seu cadastro foi encaminhado para análise fiscal. Você será contatado se necessário.',
         duration: 2000,
       });
 
       setTimeout(() => {
-        navigate('/fornecedor/login', {
-          state: {
-            fornecedorData,
-            cgcCpf: fornecedorData.cgcCpf,
-          },
-        });
+        navigate('/');
       }, 1200);
     } catch (error) {
-      toast.error('Erro ao cadastrar fornecedor', {
+      toast.error('Erro ao enviar pré-cadastro', {
         description: error instanceof Error ? error.message : 'Tente novamente em instantes.',
       });
     } finally {
@@ -250,12 +227,9 @@ export function FornecedorCadastro() {
   };
 
   const isFormValid =
-    formData.razaoSocial &&
-    formData.email &&
-    formData.nomeCliFor &&
-    formData.login &&
-    formData.senha &&
-    formData.confirmarSenha;
+    sanitizeDocument(formData.cgcCpf).length > 0 &&
+    formData.razaoSocial.trim().length > 0 &&
+    formData.nomeCliFor.trim().length > 0;
 
   return (
     <Layout>
@@ -320,6 +294,7 @@ export function FornecedorCadastro() {
                     value={formData.razaoSocial}
                     onChange={(e) => handleChange('razaoSocial', e.target.value)}
                     placeholder="Digite a razão social"
+                    maxLength={150}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -334,6 +309,7 @@ export function FornecedorCadastro() {
                     value={formData.nomeCliFor}
                     onChange={(e) => handleChange('nomeCliFor', e.target.value)}
                     placeholder="Digite o nome fantasia"
+                    maxLength={25}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -348,20 +324,7 @@ export function FornecedorCadastro() {
                     value={formData.rgIe}
                     onChange={(e) => handleChange('rgIe', e.target.value)}
                     placeholder="Digite RG ou Inscrição Estadual"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Inscrição Municipal
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.inscricaoMunicipal}
-                    onChange={(e) => handleChange('inscricaoMunicipal', e.target.value)}
-                    placeholder="Digite a inscrição municipal"
+                    maxLength={30}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -405,6 +368,7 @@ export function FornecedorCadastro() {
                     value={formData.endereco}
                     onChange={(e) => handleChange('endereco', e.target.value)}
                     placeholder="Rua, Avenida, etc."
+                    maxLength={150}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -419,6 +383,7 @@ export function FornecedorCadastro() {
                     value={formData.numero}
                     onChange={(e) => handleChange('numero', e.target.value)}
                     placeholder="Nº"
+                    maxLength={20}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -433,6 +398,7 @@ export function FornecedorCadastro() {
                     value={formData.complemento}
                     onChange={(e) => handleChange('complemento', e.target.value)}
                     placeholder="Apto, Sala, Bloco, etc."
+                    maxLength={100}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -447,6 +413,7 @@ export function FornecedorCadastro() {
                     value={formData.bairro}
                     onChange={(e) => handleChange('bairro', e.target.value)}
                     placeholder="Bairro"
+                    maxLength={100}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -454,16 +421,43 @@ export function FornecedorCadastro() {
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Cidade
+                    Município / Cidade
                   </label>
-                  <input
-                    type="text"
-                    value={formData.cidade}
-                    onChange={(e) => handleChange('cidade', e.target.value)}
-                    placeholder="Cidade"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
+                  {combosDisponiveis && municipiosOptions.length > 0 ? (
+                    <Combobox
+                      value={null}
+                      options={municipiosOptions}
+                      onChange={(val) => {
+                        if (!val) return;
+                        const selected = municipiosOptions.find((o) => o.value === val) ?? null;
+                        const label = selected?.label ?? '';
+                        handleChange('cidade', label);
+                        // Muitos ERPs devolvem algo como "SÃO PAULO - SP". Se vier assim, sincroniza UF automaticamente.
+                        const ufMatch = label.match(/-\s*([A-Z]{2})\s*$/i);
+                        if (ufMatch?.[1]) {
+                          handleChange('uf', ufMatch[1].toUpperCase());
+                        }
+                      }}
+                      placeholder={loadingCombos ? 'Carregando...' : 'Selecione o município'}
+                      searchPlaceholder="Buscar município..."
+                      disabled={loadingCombos}
+                      buttonClassName="px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white hover:bg-white/25 focus-visible:ring-white/30 disabled:opacity-60"
+                      className="bg-white/10 backdrop-blur-xl border-white/20"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={formData.cidade}
+                      onChange={(e) => handleChange('cidade', e.target.value)}
+                      placeholder="Cidade"
+                      maxLength={100}
+                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                      style={{ fontFamily: 'Outfit, sans-serif' }}
+                    />
+                  )}
+                  <p className="text-white/50 text-xs mt-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                    Selecionado: {formData.cidade || '-'}
+                  </p>
                 </div>
 
                 <div>
@@ -485,14 +479,35 @@ export function FornecedorCadastro() {
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
                     País
                   </label>
-                  <input
-                    type="text"
-                    value={formData.pais}
-                    onChange={(e) => handleChange('pais', e.target.value)}
-                    placeholder="País"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
+                  {combosDisponiveis && paisesOptions.length > 0 ? (
+                    <Combobox
+                      value={null}
+                      options={paisesOptions}
+                      onChange={(val) => {
+                        if (!val) return;
+                        const selected = paisesOptions.find((o) => o.value === val) ?? null;
+                        handleChange('pais', selected?.label ?? '');
+                      }}
+                      placeholder={loadingCombos ? 'Carregando...' : 'Selecione o país'}
+                      searchPlaceholder="Buscar país..."
+                      disabled={loadingCombos}
+                      buttonClassName="px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white hover:bg-white/25 focus-visible:ring-white/30 disabled:opacity-60"
+                      className="bg-white/10 backdrop-blur-xl border-white/20"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={formData.pais}
+                      onChange={(e) => handleChange('pais', e.target.value)}
+                      placeholder="País"
+                      maxLength={50}
+                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                      style={{ fontFamily: 'Outfit, sans-serif' }}
+                    />
+                  )}
+                  <p className="text-white/50 text-xs mt-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                    Selecionado: {formData.pais || '-'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -515,6 +530,7 @@ export function FornecedorCadastro() {
                     value={formData.ddi}
                     onChange={(e) => handleChange('ddi', e.target.value)}
                     placeholder="+55"
+                    maxLength={5}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -552,13 +568,14 @@ export function FornecedorCadastro() {
 
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    E-mail *
+                    E-mail
                   </label>
                   <input
                     type="email"
                     value={formData.email}
                     onChange={(e) => handleChange('email', e.target.value)}
                     placeholder="exemplo@empresa.com.br"
+                    maxLength={150}
                     className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
@@ -566,250 +583,25 @@ export function FornecedorCadastro() {
               </div>
             </div>
 
-            {/* Dados Financeiros */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <div className="flex items-center gap-3 mb-6">
-                <DollarSign className="w-6 h-6 text-white" />
-                <h2 className="text-2xl font-bold text-white" style={{ fontFamily: 'Playfair Display, serif' }}>
-                  Dados Financeiros
-                </h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Tipo
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.tipo}
-                    onChange={(e) => handleChange('tipo', e.target.value)}
-                    placeholder="Tipo de fornecedor"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Centro de Custo
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.centroCusto}
-                    onChange={(e) => handleChange('centroCusto', e.target.value)}
-                    placeholder="Centro de custo"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Condição de Pagamento
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.condicaoPgto}
-                    onChange={(e) => handleChange('condicaoPgto', e.target.value)}
-                    placeholder="Ex: 30 dias"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Moeda
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.moeda}
-                    onChange={(e) => handleChange('moeda', e.target.value)}
-                    placeholder="BRL"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Conta Contábil
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.ctbContaContabil}
-                    onChange={(e) => handleChange('ctbContaContabil', e.target.value)}
-                    placeholder="Conta contábil"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Método de Pagamento
-                  </label>
-                  <select
-                    value={formData.lxMetodoPagamento ?? ''}
-                    onChange={(e) =>
-                      handleChange(
-                        'lxMetodoPagamento',
-                        e.target.value === '' ? null : Number(e.target.value),
-                      )
-                    }
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  >
-                    <option value="" className="bg-[#ca0404] text-white">
-                      Selecione...
-                    </option>
-                    <option value={0} className="bg-[#ca0404] text-white">
-                      Boleto
-                    </option>
-                    <option value={1} className="bg-[#ca0404] text-white">
-                      Transferência
-                    </option>
-                    <option value={2} className="bg-[#ca0404] text-white">
-                      Pix
-                    </option>
-                    <option value={3} className="bg-[#ca0404] text-white">
-                      Outros
-                    </option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Tipo de Fornecimento */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <div className="flex items-center gap-3 mb-6">
-                <Package className="w-6 h-6 text-white" />
-                <h2 className="text-2xl font-bold text-white" style={{ fontFamily: 'Playfair Display, serif' }}>
-                  Tipo de Fornecimento
-                </h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {[
-                  { key: 'forneceMatConsumo', label: 'Fornece Material de Consumo' },
-                  { key: 'forneceMateriais', label: 'Fornece Materiais' },
-                  { key: 'forneceProdAcab', label: 'Fornece Produtos Acabados' },
-                  { key: 'beneficiador', label: 'Beneficiador' },
-                  { key: 'forneceOutros', label: 'Fornece Outros' },
-                ].map((item) => (
-                  <label key={item.key} className="flex items-center gap-3 cursor-pointer group">
-                    <input
-                      type="checkbox"
-                      checked={formData[item.key as keyof FornecedorFormData] as boolean}
-                      onChange={(e) => handleChange(item.key as keyof FornecedorFormData, e.target.checked)}
-                      className="w-5 h-5 rounded border-2 border-white/30 bg-white/20 checked:bg-white checked:border-white focus:outline-none focus:ring-2 focus:ring-white/40 transition-all duration-300 cursor-pointer"
-                    />
-                    <span className="text-white/90 group-hover:text-white transition-colors" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                      {item.label}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Campos Customizados */}
+            {/* Observações */}
             <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
               <div className="flex items-center gap-3 mb-6">
                 <FileText className="w-6 h-6 text-white" />
                 <h2 className="text-2xl font-bold text-white" style={{ fontFamily: 'Playfair Display, serif' }}>
-                  Informações Adicionais
+                  Observações
                 </h2>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div className="grid grid-cols-1 gap-5">
                 <div>
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Propriedade 00014
+                    Observações do fornecedor (opcional)
                   </label>
-                  <input
-                    type="text"
-                    value={formData.prop00014}
-                    onChange={(e) => handleChange('prop00014', e.target.value)}
-                    placeholder="Campo customizado"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Propriedade 00035
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop00035}
-                    onChange={(e) => handleChange('prop00035', e.target.value)}
-                    placeholder="Campo customizado"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Propriedade 00123
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop00123}
-                    onChange={(e) => handleChange('prop00123', e.target.value)}
-                    placeholder="Campo customizado"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
-              <div className="flex items-center gap-3 mb-6">
-                <FileText className="w-6 h-6 text-white" />
-                <h2 className="text-2xl font-bold text-white" style={{ fontFamily: 'Playfair Display, serif' }}>
-                  Acesso ao Portal
-                </h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Login *
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.login}
-                    onChange={(e) => handleChange('login', e.target.value)}
-                    placeholder="Crie seu login"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Senha *
-                  </label>
-                  <input
-                    type="password"
-                    value={formData.senha}
-                    onChange={(e) => handleChange('senha', e.target.value)}
-                    placeholder="Crie sua senha"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                    style={{ fontFamily: 'Outfit, sans-serif' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                    Confirmar senha *
-                  </label>
-                  <input
-                    type="password"
-                    value={formData.confirmarSenha}
-                    onChange={(e) => handleChange('confirmarSenha', e.target.value)}
-                    placeholder="Repita sua senha"
-                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                  <textarea
+                    value={formData.obsFornecedor}
+                    onChange={(e) => handleChange('obsFornecedor', e.target.value)}
+                    placeholder="Ex: informações adicionais, contato preferencial, etc."
+                    rows={4}
+                  className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300 resize-none"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   />
                 </div>
@@ -824,7 +616,7 @@ export function FornecedorCadastro() {
                 className="w-full bg-white text-[#ca0404] py-5 px-8 rounded-xl text-xl font-semibold hover:bg-white/90 disabled:bg-white/20 disabled:text-white/40 disabled:cursor-not-allowed transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]"
                 style={{ fontFamily: 'Outfit, sans-serif' }}
               >
-                {isSubmitting ? 'Cadastrando...' : 'Cadastrar Fornecedor'}
+                {isSubmitting ? 'Enviando...' : 'Enviar Pré-cadastro'}
               </button>
 
               <button

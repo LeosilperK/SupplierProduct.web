@@ -3,6 +3,7 @@ import { Home } from "./components/Home";
 import { FornecedorCNPJ } from "./components/FornecedorCNPJ";
 import { FornecedorLogin } from "./components/FornecedorLogin";
 import { FornecedorCadastro } from "./components/FornecedorCadastro";
+import { FornecedorAcessoCadastro } from "./components/FornecedorAcessoCadastro";
 import { FornecedorDashboard } from "./components/FornecedorDashboard";
 import { ProdutoCadastro } from "./components/ProdutoCadastro";
 import { ProdutoEditar } from "./components/ProdutoEditar";
@@ -24,6 +25,10 @@ export const router = createBrowserRouter([
   {
     path: "/fornecedor/login",
     Component: FornecedorLogin,
+  },
+  {
+    path: "/fornecedor/acesso",
+    Component: FornecedorAcessoCadastro,
   },
   {
     path: "/fornecedor/cadastro",

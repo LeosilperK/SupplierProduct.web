@@ -9,6 +9,7 @@ import { ApiError, getFornecedorByCgcCpf, loginFornecedor, type FornecedorData }
 export function FornecedorLogin() {
   const navigate = useNavigate();
   const location = useLocation();
+  const cgcCpf = location.state?.cgcCpf as string | undefined;
   const [fornecedorData, setFornecedorData] = useState<FornecedorData | null>(
     location.state?.fornecedorData ?? null,
   );
@@ -22,8 +23,6 @@ export function FornecedorLogin() {
   });
 
   useEffect(() => {
-    const cgcCpf = location.state?.cgcCpf;
-
     if (fornecedorData || !cgcCpf) {
       return;
     }
@@ -44,7 +43,7 @@ export function FornecedorLogin() {
     };
 
     void loadFornecedor();
-  }, [fornecedorData, location.state?.cgcCpf]);
+  }, [fornecedorData, cgcCpf]);
 
   const handleLogin = async () => {
     if (!formData.username || !formData.password) {
@@ -180,6 +179,23 @@ export function FornecedorLogin() {
               <ArrowLeft className="w-5 h-5 mr-2" />
               Voltar para consulta CNPJ
             </button>
+
+            {cgcCpf && (
+              <button
+                onClick={() =>
+                  navigate('/fornecedor/acesso', {
+                    state: {
+                      cgcCpf,
+                      fornecedorData,
+                    },
+                  })
+                }
+                className="w-full text-white/80 hover:text-white text-base transition-colors duration-300 py-2"
+                style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}
+              >
+                Primeiro acesso? Criar login e senha
+              </button>
+            )}
           </div>
         </div>
       </div>

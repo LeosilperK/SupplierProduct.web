@@ -1,10 +1,22 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Layout } from './Layout';
 import { LogOut, CheckCircle, XCircle, Filter } from 'lucide-react';
 import { ImageWithFallback } from './ui/image-with-fallback';
 import { toast } from 'sonner';
 import { ProdutoDetalhesModal } from './ProdutoDetalhesModal';
+import {
+  ApiError,
+  aprovarCompras,
+  enriquecerNcmListaDetalheInterno,
+  listarPendentesCompras,
+  ncmPrincipalDoProduto,
+  obterProdutoCadastroInterno,
+  reprovarCompras,
+  comprasAnaliseDraftStorageKey,
+  type ProdutoCadastroDetalhe,
+  type ProdutoPendenteCompras,
+} from '../lib/supplier-api';
 
 interface Cor {
   codCor: string;
@@ -57,6 +69,7 @@ interface Product {
   barras?: Barra[];
 }
 
+/** Alinhado ao enum StatusProdutoCadastro (backend). */
 const STATUS_FLUXO: { [key: number]: string } = {
   1: 'Pré-Cadastro Fornecedor',
   2: 'Aguardando Compras',
@@ -94,7 +107,93 @@ const getStatusColor = (status: number) => {
   }
 };
 
-type FilterType = 'all' | 'aguardando' | 'analise' | 'integrado';
+type FilterType = 'all' | 'aguardando' | 'analise' | 'aguardandoFiscal' | 'integrado';
+
+/** Status após compras aprovar até integração no ERP (conforme `PRODUTO_CADASTRO.STATUS_FLUXO`). */
+const FISCAL_PIPELINE_STATUS = new Set([4, 5, 6]);
+
+/** Status exibidos no dashboard de compras (acompanhamento do pipeline). */
+const COMPRAS_DASHBOARD_STATUS = new Set([2, 3, 4, 5, 6, 7]);
+
+function statusFluxoFromPendenteCompras(p: ProdutoPendenteCompras): number {
+  const r = p as unknown as Record<string, unknown>;
+  const raw = r.statusFluxo ?? r.StatusFluxo;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function nomeFornecedorFromPendenteCompras(p: ProdutoPendenteCompras): string {
+  const r = p as unknown as Record<string, unknown>;
+  const v = r.nomeFornecedor ?? r.NomeFornecedor;
+  return typeof v === 'string' ? v : p.nomeFornecedor ?? '';
+}
+
+function mapPendenteToProduct(p: ProdutoPendenteCompras): Product {
+  return {
+    id: p.id,
+    descProduto: p.descProduto,
+    descProdutoNf: p.descProdutoNf ?? '',
+    referFabricante: p.referFabricante ?? '',
+    ncm: p.ncm ?? '',
+    statusFluxo: statusFluxoFromPendenteCompras(p),
+    dataCadastro: p.dataCadastro,
+    fornecedor: nomeFornecedorFromPendenteCompras(p),
+  };
+}
+
+function statusFluxoFromDetalhe(d: ProdutoCadastroDetalhe): number {
+  const r = d as unknown as Record<string, unknown>;
+  const raw = r.statusFluxo ?? r.StatusFluxo;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : d.statusFluxo;
+}
+
+function mapInternoToProduct(d: ProdutoCadastroDetalhe, nomeFornecedor: string): Product {
+  return {
+    id: d.id,
+    descProduto: d.descProduto,
+    descProdutoNf: d.descProdutoNf ?? '',
+    referFabricante: d.referFabricante ?? '',
+    ncm: ncmPrincipalDoProduto(d.ncm, d.cores) ?? '',
+    statusFluxo: statusFluxoFromDetalhe(d),
+    dataCadastro: d.dataCadastro,
+    fornecedor: nomeFornecedor,
+    tipoProduto: d.tipoProduto ?? undefined,
+    fabricante: d.fabricante ?? undefined,
+    composicao: d.composicao ?? undefined,
+    grade: d.grade ?? undefined,
+    linha: d.linha ?? undefined,
+    griffe: d.griffe ?? undefined,
+    colecao: d.colecao ?? undefined,
+    obsFornecedor: d.obsFornecedor ?? undefined,
+    cores: (d.cores ?? []).map((c) => ({
+      codCor: c.codCor ?? '',
+      descCor: c.descCor ?? '',
+      origemCor: c.origemCor ?? '',
+      corFabricante: c.corFabricante ?? '',
+      ncm: c.ncm ?? '',
+    })),
+    precos: (d.precos ?? []).map((pr) => ({
+      codigoTabelaPreco: pr.codigoTabelaPreco ?? '',
+      preco: Number(pr.preco ?? 0),
+    })),
+    fotos: (d.fotos ?? []).map((f) => ({
+      corLinx: f.corLinx ?? '',
+      nomeArquivo: f.nomeArquivo ?? '',
+      caminhoArquivo: f.caminhoArquivo ?? '',
+      base64Foto: f.base64Foto ?? '',
+      ordemFoto: f.ordemFoto,
+    })),
+    barras: (d.barras ?? []).map((b) => ({
+      codigoBarra: b.codigoBarra ?? '',
+      corProduto: b.corProduto ?? '',
+      tamanho: b.tamanho ?? '',
+      grade: b.grade ?? '',
+    })),
+  };
+}
 
 export function ColaboradorDashboardCompras() {
   const navigate = useNavigate();
@@ -104,153 +203,45 @@ export function ColaboradorDashboardCompras() {
   const [activeFilter, setActiveFilter] = useState<FilterType>('aguardando');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [products, setProducts] = useState<Product[]>([
-    {
-      id: 1,
-      descProduto: 'Tenis Teste Atualizado',
-      descProdutoNf: 'Tenis Teste NF Atualizado',
-      referFabricante: 'REF999',
-      ncm: '64041100',
-      statusFluxo: 2,
-      dataCadastro: '2026-04-16T15:47:56.1108294',
-      fornecedor: 'TESTE API FORNECEDOR 3',
-      tipoProduto: 'Calçado Esportivo',
-      fabricante: 'Nike Brasil',
-      composicao: '60% Sintético, 40% Tecido',
-      grade: '36, 37, 38, 39, 40, 41, 42',
-      linha: 'Performance',
-      griffe: 'Nike',
-      colecao: 'Verão 2026',
-      obsFornecedor: 'Produto importado. Entrega em 15 dias úteis.',
-      cores: [
-        { codCor: '001', descCor: 'Preto', origemCor: 'Nacional', corFabricante: 'Black 001', ncm: '64041100' },
-        { codCor: '002', descCor: 'Branco', origemCor: 'Nacional', corFabricante: 'White 002', ncm: '64041100' },
-      ],
-      precos: [
-        { codigoTabelaPreco: 'TAB001', preco: 299.9 },
-        { codigoTabelaPreco: 'TAB002', preco: 349.9 },
-      ],
-      fotos: [
-        {
-          corLinx: '001',
-          nomeArquivo: 'tenis-preto-frente.jpg',
-          caminhoArquivo: 'produtos/tenis/tenis-preto-frente.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-          ordemFoto: 1,
-        },
-        {
-          corLinx: '001',
-          nomeArquivo: 'tenis-preto-lateral.jpg',
-          caminhoArquivo: 'produtos/tenis/tenis-preto-lateral.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-          ordemFoto: 2,
-        },
-        {
-          corLinx: '002',
-          nomeArquivo: 'tenis-branco-frente.jpg',
-          caminhoArquivo: 'produtos/tenis/tenis-branco-frente.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
-          ordemFoto: 3,
-        },
-      ],
-      barras: [
-        { codigoBarra: '7891234567890', corProduto: 'Preto', tamanho: '40', grade: 'Adulto' },
-        { codigoBarra: '7891234567891', corProduto: 'Branco', tamanho: '40', grade: 'Adulto' },
-      ],
-    },
-    {
-      id: 2,
-      descProduto: 'Camisa Polo Premium',
-      descProdutoNf: 'Camisa Polo NF',
-      referFabricante: 'REF001',
-      ncm: '61051000',
-      statusFluxo: 3,
-      dataCadastro: '2026-04-15T10:30:00',
-      fornecedor: 'FORNECEDOR XYZ LTDA',
-      tipoProduto: 'Vestuário',
-      fabricante: 'Lacoste',
-      composicao: '100% Algodão Pima',
-      grade: 'P, M, G, GG',
-      linha: 'Classic',
-      griffe: 'Lacoste',
-      colecao: 'Primavera 2026',
-      obsFornecedor: 'Algodão peruano de alta qualidade. Lavagem a seco recomendada.',
-      cores: [
-        { codCor: '010', descCor: 'Azul Marinho', origemCor: 'Importado', corFabricante: 'Navy Blue', ncm: '61051000' },
-        { codCor: '011', descCor: 'Vermelho', origemCor: 'Importado', corFabricante: 'Red Classic', ncm: '61051000' },
-        { codCor: '012', descCor: 'Verde Musgo', origemCor: 'Importado', corFabricante: 'Forest Green', ncm: '61051000' },
-      ],
-      precos: [
-        { codigoTabelaPreco: 'TAB001', preco: 389.9 },
-        { codigoTabelaPreco: 'TAB002', preco: 429.9 },
-      ],
-      fotos: [
-        {
-          corLinx: '010',
-          nomeArquivo: 'polo-azul-marinho.jpg',
-          caminhoArquivo: 'produtos/polo/polo-azul-marinho.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-          ordemFoto: 1,
-        },
-        {
-          corLinx: '011',
-          nomeArquivo: 'polo-vermelho.jpg',
-          caminhoArquivo: 'produtos/polo/polo-vermelho.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
-          ordemFoto: 2,
-        },
-        {
-          corLinx: '012',
-          nomeArquivo: 'polo-verde.jpg',
-          caminhoArquivo: 'produtos/polo/polo-verde.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAD+AH/ZbKRjgAAAABJRU5ErkJggg==',
-          ordemFoto: 3,
-        },
-      ],
-      barras: [
-        { codigoBarra: '7891234567892', corProduto: 'Azul Marinho', tamanho: 'M', grade: 'Adulto' },
-        { codigoBarra: '7891234567893', corProduto: 'Vermelho', tamanho: 'M', grade: 'Adulto' },
-        { codigoBarra: '7891234567894', corProduto: 'Verde Musgo', tamanho: 'M', grade: 'Adulto' },
-      ],
-    },
-    {
-      id: 3,
-      descProduto: 'Calça Jeans Masculina',
-      descProdutoNf: 'Calça Jeans NF',
-      referFabricante: 'REF002',
-      ncm: '62034200',
-      statusFluxo: 7,
-      dataCadastro: '2026-04-14T08:15:00',
-      fornecedor: 'FORNECEDOR ABC S.A.',
-      tipoProduto: 'Vestuário',
-      fabricante: "Levi's",
-      composicao: '98% Algodão, 2% Elastano',
-      grade: '38, 40, 42, 44, 46',
-      linha: 'Skinny',
-      griffe: "Levi's",
-      colecao: 'Outono 2026',
-      obsFornecedor: 'Modelo slim fit com elasticidade. Stonewashed.',
-      cores: [{ codCor: '020', descCor: 'Azul Escuro', origemCor: 'Nacional', corFabricante: 'Dark Blue', ncm: '62034200' }],
-      precos: [{ codigoTabelaPreco: 'TAB001', preco: 259.9 }],
-      fotos: [
-        {
-          corLinx: '020',
-          nomeArquivo: 'calca-jeans-azul.jpg',
-          caminhoArquivo: 'produtos/calcas/calca-jeans-azul.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-          ordemFoto: 1,
-        },
-        {
-          corLinx: '020',
-          nomeArquivo: 'calca-jeans-detalhe.jpg',
-          caminhoArquivo: 'produtos/calcas/calca-jeans-detalhe.jpg',
-          base64Foto: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-          ordemFoto: 2,
-        },
-      ],
-      barras: [{ codigoBarra: '7891234567895', corProduto: 'Azul Escuro', tamanho: '42', grade: 'Adulto' }],
-    },
-  ]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoadingList, setIsLoadingList] = useState(true);
+  const [detailLoadingId, setDetailLoadingId] = useState<number | null>(null);
+
+  const loadPendentes = useCallback(async () => {
+    setIsLoadingList(true);
+    try {
+      setLoadError(null);
+      const rows = await listarPendentesCompras();
+      const mapped = (rows ?? []).map((p) => mapPendenteToProduct(p));
+      const enriched = await enriquecerNcmListaDetalheInterno(mapped);
+      setProducts(enriched);
+    } catch (error) {
+      const message =
+        error instanceof ApiError || error instanceof Error ? error.message : 'Erro ao carregar lista.';
+      setLoadError(message);
+      toast.error('Não foi possível carregar produtos pendentes de compras.', { description: message });
+    } finally {
+      setIsLoadingList(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPendentes();
+  }, [loadPendentes]);
+
+  useEffect(() => {
+    const tick = () => void loadPendentes();
+    const iv = window.setInterval(tick, 45_000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [loadPendentes]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -263,46 +254,94 @@ export function ColaboradorDashboardCompras() {
     });
   };
 
-  const handleAprovar = (productId?: number) => {
-    const id = productId || selectedProduct?.id;
+  const handleAprovar = async (productId?: number) => {
+    const id = productId ?? selectedProduct?.id;
     if (!id) return;
 
-    setProducts((prevProducts) => prevProducts.map((product) => (product.id === id ? { ...product, statusFluxo: 4 } : product)));
-
-    toast.success('Produto aprovado!', {
-      description: 'Produto encaminhado para análise fiscal.',
-      duration: 3000,
-    });
-  };
-
-  const handleReprovar = (productId?: number) => {
-    const id = productId || selectedProduct?.id;
-    if (!id) return;
-
-    setProducts((prevProducts) => prevProducts.map((product) => (product.id === id ? { ...product, statusFluxo: 8 } : product)));
-
-    toast.error('Produto reprovado', {
-      description: 'Produto retornado ao fornecedor com status de reprovação comercial.',
-      duration: 3000,
-    });
-  };
-
-  const handleIniciarAnalise = (productId: number) => {
-    const product = products.find((p) => p.id === productId);
-    if (product) {
-      setSelectedProduct(product);
-      setIsModalOpen(true);
+    try {
+      await aprovarCompras(id);
+      try {
+        window.sessionStorage.removeItem(comprasAnaliseDraftStorageKey(id));
+      } catch {
+        /* ignore */
+      }
+      toast.success('Produto aprovado por compras!', {
+        description:
+          'O cadastro segue para a fila fiscal; a lista abaixo acompanha o status gravado em PRODUTO_CADASTRO (atualização automática).',
+        duration: 4000,
+      });
+      setIsModalOpen(false);
+      setSelectedProduct(null);
+      setActiveFilter('aguardandoFiscal');
+      await loadPendentes();
+    } catch (error) {
+      let desc = error instanceof ApiError || error instanceof Error ? error.message : undefined;
+      if (
+        error instanceof ApiError &&
+        error.status === 400 &&
+        desc &&
+        /obrigat[oó]rios|aguardando compras|em análise de compras/i.test(desc)
+      ) {
+        desc =
+          `${desc} Se você aprovou pela grade, abra «Revisar análise»: no modal, o botão Aprovar grava a análise e só então envia ao fiscal.`;
+      }
+      toast.error('Não foi possível aprovar o produto.', {
+        description: desc,
+      });
+      throw error;
     }
   };
 
-  const handleIniciarAnaliseConfirm = () => {
-    if (selectedProduct) {
-      setProducts((prevProducts) => prevProducts.map((product) => (product.id === selectedProduct.id ? { ...product, statusFluxo: 3 } : product)));
+  const handleReprovar = async (productId?: number) => {
+    const id = productId ?? selectedProduct?.id;
+    if (!id) return;
 
-      toast.info('Análise iniciada', {
-        description: 'Produto movido para Em Análise Compras.',
-        duration: 2000,
+    const motivo = window.prompt('Informe o motivo da reprovação comercial:');
+    if (motivo === null) {
+      throw new Error('cancelado');
+    }
+    if (!motivo.trim()) {
+      toast.error('Motivo obrigatório para reprovar.');
+      throw new Error('validação');
+    }
+
+    try {
+      await reprovarCompras(id, { motivo: motivo.trim() });
+      try {
+        window.sessionStorage.removeItem(comprasAnaliseDraftStorageKey(id));
+      } catch {
+        /* ignore */
+      }
+      toast.error('Produto reprovado por compras.', {
+        description: 'O fornecedor será notificado pelo status do cadastro.',
+        duration: 4000,
       });
+      setIsModalOpen(false);
+      setSelectedProduct(null);
+      await loadPendentes();
+    } catch (error) {
+      toast.error('Não foi possível reprovar o produto.', {
+        description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
+      });
+      throw error;
+    }
+  };
+
+  const handleIniciarAnalise = async (productId: number) => {
+    const row = products.find((p) => p.id === productId);
+    if (!row) return;
+
+    setDetailLoadingId(productId);
+    try {
+      const detalhe = await obterProdutoCadastroInterno(productId);
+      setSelectedProduct(mapInternoToProduct(detalhe, row.fornecedor));
+      setIsModalOpen(true);
+    } catch (error) {
+      toast.error('Não foi possível carregar o cadastro completo do produto.', {
+        description: error instanceof ApiError || error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setDetailLoadingId(null);
     }
   };
 
@@ -312,17 +351,20 @@ export function ColaboradorDashboardCompras() {
         return product.statusFluxo === 2;
       case 'analise':
         return product.statusFluxo === 3;
+      case 'aguardandoFiscal':
+        return FISCAL_PIPELINE_STATUS.has(product.statusFluxo);
       case 'integrado':
         return product.statusFluxo === 7;
       case 'all':
       default:
-        return [2, 3, 7].includes(product.statusFluxo);
+        return COMPRAS_DASHBOARD_STATUS.has(product.statusFluxo);
     }
   });
 
   const counts = {
     aguardando: products.filter((p) => p.statusFluxo === 2).length,
     analise: products.filter((p) => p.statusFluxo === 3).length,
+    aguardandoFiscal: products.filter((p) => FISCAL_PIPELINE_STATUS.has(p.statusFluxo)).length,
     integrado: products.filter((p) => p.statusFluxo === 7).length,
   };
 
@@ -340,6 +382,11 @@ export function ColaboradorDashboardCompras() {
                 <p className="text-2xl text-white/80" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
                   Bem-vindo, <span className="font-medium">{userName}</span>
                 </p>
+                <p className="text-white/55 text-sm mt-3 max-w-2xl" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                  A lista reflete o STATUS_FLUXO em PRODUTO_CADASTRO: 2 aguardando compras, 3 após salvar análise de compras, 4–6 no
+                  fluxo fiscal até integração, 7 integrado ao ERP. A página atualiza periodicamente; reprovações (8/9) saem desta
+                  visão.
+                </p>
               </div>
             </div>
             <button
@@ -352,7 +399,16 @@ export function ColaboradorDashboardCompras() {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+          {loadError && (
+            <div
+              className="mb-6 rounded-xl border border-red-400/40 bg-red-500/15 px-5 py-4 text-white text-sm"
+              style={{ fontFamily: 'Outfit, sans-serif' }}
+            >
+              {loadError}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-10">
             <button
               onClick={() => setActiveFilter('aguardando')}
               className={`bg-white/10 backdrop-blur-xl rounded-2xl p-6 border-2 transition-all duration-300 hover:scale-105 ${
@@ -392,6 +448,25 @@ export function ColaboradorDashboardCompras() {
             </button>
 
             <button
+              onClick={() => setActiveFilter('aguardandoFiscal')}
+              className={`bg-white/10 backdrop-blur-xl rounded-2xl p-6 border-2 transition-all duration-300 hover:scale-105 ${
+                activeFilter === 'aguardandoFiscal' ? 'border-purple-400/60 bg-white/20' : 'border-white/20'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-white/70 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                  Aguardando Fiscal
+                </p>
+                <div className="bg-purple-500/30 rounded-full p-2">
+                  <Filter className="w-5 h-5 text-purple-200" />
+                </div>
+              </div>
+              <p className="text-4xl font-bold text-white" style={{ fontFamily: 'Playfair Display, serif' }}>
+                {counts.aguardandoFiscal}
+              </p>
+            </button>
+
+            <button
               onClick={() => setActiveFilter('integrado')}
               className={`bg-white/10 backdrop-blur-xl rounded-2xl p-6 border-2 transition-all duration-300 hover:scale-105 ${
                 activeFilter === 'integrado' ? 'border-emerald-400/60 bg-white/20' : 'border-white/20'
@@ -417,11 +492,12 @@ export function ColaboradorDashboardCompras() {
                 <h2 className="text-3xl font-bold text-white mb-2" style={{ fontFamily: 'Playfair Display, serif' }}>
                   {activeFilter === 'aguardando' && 'Produtos Aguardando Compras'}
                   {activeFilter === 'analise' && 'Produtos Em Análise Compras'}
+                  {activeFilter === 'aguardandoFiscal' && 'Produtos na fila fiscal (acompanhamento)'}
                   {activeFilter === 'integrado' && 'Produtos Integrados no ERP'}
                   {activeFilter === 'all' && 'Todos os Produtos'}
                 </h2>
                 <p className="text-white/60 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
-                  {filteredProducts.length} produto(s) encontrado(s)
+                  {isLoadingList ? 'Carregando…' : `${filteredProducts.length} produto(s) encontrado(s)`}
                 </p>
               </div>
             </div>
@@ -503,14 +579,23 @@ export function ColaboradorDashboardCompras() {
                             {product.statusFluxo === 2 && (
                               <button
                                 onClick={() => handleIniciarAnalise(product.id)}
-                                className="text-white bg-orange-500/30 hover:bg-orange-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-orange-400/30 text-xs"
+                                disabled={detailLoadingId === product.id}
+                                className="text-white bg-orange-500/30 hover:bg-orange-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-orange-400/30 text-xs disabled:opacity-50"
                                 style={{ fontFamily: 'Outfit, sans-serif' }}
                               >
-                                Iniciar Análise
+                                {detailLoadingId === product.id ? 'Carregando...' : 'Analisar cadastro'}
                               </button>
                             )}
                             {product.statusFluxo === 3 && (
                               <>
+                                <button
+                                  onClick={() => handleIniciarAnalise(product.id)}
+                                  disabled={detailLoadingId === product.id}
+                                  className="text-white bg-orange-500/20 hover:bg-orange-500/40 transition-all duration-200 px-3 py-2 rounded-lg border border-orange-400/25 text-xs disabled:opacity-50"
+                                  style={{ fontFamily: 'Outfit, sans-serif' }}
+                                >
+                                  {detailLoadingId === product.id ? 'Carregando...' : 'Revisar análise'}
+                                </button>
                                 <button
                                   onClick={() => handleAprovar(product.id)}
                                   className="text-white bg-green-500/30 hover:bg-green-500/50 transition-all duration-200 px-3 py-2 rounded-lg border border-green-400/30 text-xs flex items-center gap-1"
@@ -528,6 +613,11 @@ export function ColaboradorDashboardCompras() {
                                   Reprovar
                                 </button>
                               </>
+                            )}
+                            {FISCAL_PIPELINE_STATUS.has(product.statusFluxo) && (
+                              <span className="text-white/45 text-xs text-center block" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                                Acompanhamento fiscal (somente leitura neste painel)
+                              </span>
                             )}
                             {product.statusFluxo === 7 && (
                               <span className="text-white/40 text-xs" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
@@ -548,6 +638,7 @@ export function ColaboradorDashboardCompras() {
 
       {selectedProduct && (
         <ProdutoDetalhesModal
+          key={selectedProduct.id}
           product={selectedProduct}
           isOpen={isModalOpen}
           onClose={() => {
@@ -556,7 +647,12 @@ export function ColaboradorDashboardCompras() {
           }}
           onAprovar={() => handleAprovar()}
           onReprovar={() => handleReprovar()}
-          onIniciarAnalise={handleIniciarAnaliseConfirm}
+          onMutationSuccess={() => {
+            if (selectedProduct) {
+              setSelectedProduct((p) => (p ? { ...p, statusFluxo: 3 } : null));
+            }
+            void loadPendentes();
+          }}
           showActions
           departamento="compras"
         />
