@@ -15,6 +15,7 @@ import {
   listarErpSubgruposKalNosValidos,
   listarErpSubgruposProduto,
   listarErpTiposProduto,
+  listarErpTipoItem,
   listarErpUnidades,
 } from '../lib/supplier-api';
 import { Combobox, type ComboboxOption } from './ui/combobox';
@@ -54,6 +55,18 @@ function comboErpToOptions(items: ComboErp[]): ComboboxOption[] {
     }));
 }
 
+/** Rótulo «código — descrição»; persiste apenas o código. */
+function comboErpCodigoDescricaoToOptions(items: ComboErp[]): ComboboxOption[] {
+  return (items ?? [])
+    .filter((x) => (x?.codigo ?? '').toString().trim().length > 0)
+    .map((x) => {
+      const codigo = String(x.codigo).trim();
+      const descricao = (x.descricao?.toString() ?? '').trim();
+      const label = descricao ? `${codigo} — ${descricao}` : codigo;
+      return { value: codigo, label };
+    });
+}
+
 function mergeCustomErpOption(options: ComboboxOption[], current: string): ComboboxOption[] {
   const t = current.trim();
   if (!t) return options;
@@ -67,6 +80,15 @@ function comboboxValueFromStored(raw: string, options: ComboboxOption[]): string
   if (options.some((o) => o.value === s)) return s;
   const byLabel = options.find((o) => o.label === s);
   if (byLabel) return byLabel.value;
+  const byCodigoOuDescricao = options.find((o) => {
+    const sep = ' — ';
+    const idx = o.label.indexOf(sep);
+    if (idx < 0) return false;
+    const codigo = o.label.slice(0, idx);
+    const descricao = o.label.slice(idx + sep.length);
+    return codigo === s || descricao === s;
+  });
+  if (byCodigoOuDescricao) return byCodigoOuDescricao.value;
   return s;
 }
 
@@ -99,6 +121,7 @@ export function AnaliseComprasFields({
   const [optsUnidade, setOptsUnidade] = useState<ComboboxOption[]>([]);
   const [optsContasContabeis, setOptsContasContabeis] = useState<ComboboxOption[]>([]);
   const [optsIndicadorCfop, setOptsIndicadorCfop] = useState<ComboboxOption[]>([]);
+  const [optsTipoItemSped, setOptsTipoItemSped] = useState<ComboboxOption[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -150,6 +173,15 @@ export function AnaliseComprasFields({
           indicadoresCfop = [];
         }
         if (!cancelled) setOptsIndicadorCfop(comboErpToOptions(indicadoresCfop));
+
+        let tiposItem: ComboErp[] = [];
+        try {
+          tiposItem = await listarErpTipoItem();
+        } catch {
+          tiposItem = [];
+        }
+        if (!cancelled) setOptsTipoItemSped(comboErpCodigoDescricaoToOptions(tiposItem));
+
         setCombosOk(true);
       } catch {
         if (!cancelled) setCombosOk(false);
@@ -283,6 +315,10 @@ export function AnaliseComprasFields({
   const indicadorCfopOpts = useMemo(
     () => mergeCustomErpOption(optsIndicadorCfop, formCompras.indicadorCfop),
     [optsIndicadorCfop, formCompras.indicadorCfop],
+  );
+  const tipoItemSpedOpts = useMemo(
+    () => mergeCustomErpOption(optsTipoItemSped, formCompras.tipoItemSped),
+    [optsTipoItemSped, formCompras.tipoItemSped],
   );
 
   const inputClass =
@@ -613,14 +649,33 @@ export function AnaliseComprasFields({
         <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
           Tipo Item SPED
         </label>
-        <input
-          type="text"
-          value={formCompras.tipoItemSped}
-          onChange={(e) => setFormCompras({ ...formCompras, tipoItemSped: e.target.value })}
-          disabled={disabled}
-          className={inputClass}
-          style={{ fontFamily: 'Outfit, sans-serif' }}
-        />
+        {tipoItemSpedOpts.length > 0 ? (
+          <Combobox
+            value={comboboxValueFromStored(formCompras.tipoItemSped, tipoItemSpedOpts)}
+            options={tipoItemSpedOpts}
+            onChange={(v) => setFormCompras({ ...formCompras, tipoItemSped: v ?? '' })}
+            placeholder={placeholderCombo}
+            searchPlaceholder="Buscar por código ou descrição…"
+            disabled={disabled || loadingCombos}
+            buttonClassName={comboBtn}
+            className="bg-white/10 backdrop-blur-xl border-white/20"
+          />
+        ) : (
+          <input
+            type="text"
+            value={formCompras.tipoItemSped}
+            onChange={(e) => setFormCompras({ ...formCompras, tipoItemSped: e.target.value })}
+            placeholder={loadingCombos ? 'Carregando tipos do ERP…' : 'Código do tipo item SPED'}
+            disabled={disabled || loadingCombos}
+            className={inputClass}
+            style={{ fontFamily: 'Outfit, sans-serif' }}
+          />
+        )}
+        {tipoItemSpedOpts.length > 0 && (
+          <p className="text-white/50 text-xs mt-1.5" style={{ fontFamily: 'Outfit, sans-serif' }}>
+            O código é gravado no banco; busque por código ou descrição.
+          </p>
+        )}
       </div>
 
       <div>

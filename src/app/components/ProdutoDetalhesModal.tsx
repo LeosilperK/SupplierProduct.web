@@ -263,27 +263,11 @@ function mergeComprasFormWithDraft(
   return { ...base, ...draft };
 }
 
-function buildFiscalPayload(form: {
-  ncm: string;
-  cest: string;
-  tributOrigem: string;
-  tributIcms: string;
-  idExcecaoGrupo: string;
-  classificacaoFiscalFinal: string;
-  caracteristicaContabil: string;
-  enviaLojaVarejo: boolean;
-  enviaVarejoInternet: boolean;
-  variaPrecoPorCor: boolean;
-  obsFiscal: string;
-}): ProdutoAnaliseFiscalPayload {
+function buildFiscalPayload(form: FiscalFormStateShape): ProdutoAnaliseFiscalPayload {
   const t = (s: string) => (s.trim() === '' ? null : s.trim());
   return {
-    ncm: t(form.ncm),
-    cest: t(form.cest),
-    tributOrigem: t(form.tributOrigem),
     tributIcms: t(form.tributIcms),
     idExcecaoGrupo: t(form.idExcecaoGrupo),
-    classificacaoFiscalFinal: t(form.classificacaoFiscalFinal),
     caracteristicaContabil: t(form.caracteristicaContabil),
     enviaLojaVarejo: form.enviaLojaVarejo,
     enviaVarejoInternet: form.enviaVarejoInternet,
@@ -294,11 +278,8 @@ function buildFiscalPayload(form: {
 
 type FiscalFormStateShape = {
   ncm: string;
-  cest: string;
-  tributOrigem: string;
   tributIcms: string;
   idExcecaoGrupo: string;
-  classificacaoFiscalFinal: string;
   caracteristicaContabil: string;
   enviaLojaVarejo: boolean;
   enviaVarejoInternet: boolean;
@@ -317,11 +298,8 @@ type FiscalAnaliseDraftStored = {
 function fiscalFormSeedFromProduct(product: Product): FiscalFormStateShape {
   return {
     ncm: ncmPrincipalDoProduto(product.ncm, product.cores) ?? '',
-    cest: (product.cest ?? '').trim(),
-    tributOrigem: (product.tributOrigem ?? '').trim(),
     tributIcms: (product.tributIcms ?? '').trim(),
     idExcecaoGrupo: (product.idExcecaoGrupo ?? '').trim(),
-    classificacaoFiscalFinal: (product.classificacaoFiscalFinal ?? '').trim(),
     caracteristicaContabil: (product.caracteristicaContabil ?? '').trim(),
     enviaLojaVarejo: Boolean(product.enviaLojaVarejo),
     enviaVarejoInternet: Boolean(product.enviaVarejoInternet),
@@ -340,11 +318,8 @@ function readFiscalAnaliseDraft(produtoId: number): FiscalAnaliseDraftStored | n
     const f = o.form as Record<string, unknown>;
     const form: FiscalFormStateShape = {
       ncm: typeof f.ncm === 'string' ? f.ncm : '',
-      cest: typeof f.cest === 'string' ? f.cest : '',
-      tributOrigem: typeof f.tributOrigem === 'string' ? f.tributOrigem : '',
       tributIcms: typeof f.tributIcms === 'string' ? f.tributIcms : '',
       idExcecaoGrupo: typeof f.idExcecaoGrupo === 'string' ? f.idExcecaoGrupo : '',
-      classificacaoFiscalFinal: typeof f.classificacaoFiscalFinal === 'string' ? f.classificacaoFiscalFinal : '',
       caracteristicaContabil: typeof f.caracteristicaContabil === 'string' ? f.caracteristicaContabil : '',
       enviaLojaVarejo: Boolean(f.enviaLojaVarejo),
       enviaVarejoInternet: Boolean(f.enviaVarejoInternet),
@@ -383,11 +358,8 @@ export function ProdutoDetalhesModal({
 
   const [formFiscal, setFormFiscal] = useState({
     ncm: ncmInicialFiscal,
-    cest: '',
-    tributOrigem: '',
     tributIcms: '',
     idExcecaoGrupo: '',
-    classificacaoFiscalFinal: '',
     caracteristicaContabil: '',
     enviaLojaVarejo: false,
     enviaVarejoInternet: false,
@@ -880,6 +852,37 @@ export function ProdutoDetalhesModal({
                     Análise Fiscal
                   </h3>
                 </div>
+                <div className="rounded-xl bg-white/5 border border-white/10 p-4 mb-5">
+                  <p className="text-white/60 text-xs mb-3" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 300 }}>
+                    Preenchido pelo fornecedor no pré-cadastro
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <span className="block text-white/50 text-xs mb-1" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                        CEST
+                      </span>
+                      <p className="text-white text-sm" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                        {product.cest?.trim() || '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="block text-white/50 text-xs mb-1" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                        Tribut. Origem
+                      </span>
+                      <p className="text-white text-sm" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                        {product.tributOrigem?.trim() || '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="block text-white/50 text-xs mb-1" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                        Classificação Fiscal Final
+                      </span>
+                      <p className="text-white text-sm" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                        {product.classificacaoFiscalFinal?.trim() || '—'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   <div>
                     <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
@@ -889,32 +892,6 @@ export function ProdutoDetalhesModal({
                       type="text"
                       value={formFiscal.ncm}
                       onChange={(e) => setFormFiscal({ ...formFiscal, ncm: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      CEST
-                    </label>
-                    <input
-                      type="text"
-                      value={formFiscal.cest}
-                      onChange={(e) => setFormFiscal({ ...formFiscal, cest: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Tribut. Origem
-                    </label>
-                    <input
-                      type="text"
-                      value={formFiscal.tributOrigem}
-                      onChange={(e) => setFormFiscal({ ...formFiscal, tributOrigem: e.target.value })}
                       className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                       style={{ fontFamily: 'Outfit, sans-serif' }}
                     />
@@ -941,19 +918,6 @@ export function ProdutoDetalhesModal({
                       type="text"
                       value={formFiscal.idExcecaoGrupo}
                       onChange={(e) => setFormFiscal({ ...formFiscal, idExcecaoGrupo: e.target.value })}
-                      className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
-                      style={{ fontFamily: 'Outfit, sans-serif' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 mb-2 text-sm" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
-                      Classificação Fiscal Final
-                    </label>
-                    <input
-                      type="text"
-                      value={formFiscal.classificacaoFiscalFinal}
-                      onChange={(e) => setFormFiscal({ ...formFiscal, classificacaoFiscalFinal: e.target.value })}
                       className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                       style={{ fontFamily: 'Outfit, sans-serif' }}
                     />

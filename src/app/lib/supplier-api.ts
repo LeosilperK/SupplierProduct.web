@@ -200,12 +200,8 @@ export const DEFAULT_PRODUTO_CONTAS_CONTABEIS_ANALISE_COMPRAS: Pick<
 };
 
 export interface ProdutoAnaliseFiscalPayload {
-  ncm?: string | null;
-  cest?: string | null;
-  tributOrigem?: string | null;
   tributIcms?: string | null;
   idExcecaoGrupo?: string | null;
-  classificacaoFiscalFinal?: string | null;
   caracteristicaContabil?: string | null;
   enviaLojaVarejo?: boolean | null;
   enviaVarejoInternet?: boolean | null;
@@ -322,6 +318,9 @@ export interface ProdutoPreCadastroPayload {
   referFabricante?: string | null;
   fabricante?: string | null;
   composicao?: string | null;
+  cest?: string | null;
+  tributOrigem?: string | null;
+  classificacaoFiscalFinal?: string | null;
   obsFornecedor?: string | null;
 
   subColecao?: string | null;
@@ -642,8 +641,28 @@ export async function listarErpSubgruposKalNosValidos(rede: string, linha: strin
   return requestWindows<ComboErp[]>(`/erpconsultas/subgrupos-kal-nos-validos?${q.toString()}`);
 }
 
-export async function listarErpComposicoes() {
+export async function listarErpComposicoes(token?: string | null) {
+  const bearer = token?.trim();
+  if (bearer) {
+    try {
+      return await requestJwt<ComboErp[]>('/erpconsultas/composicoes', bearer);
+    } catch (e) {
+      if (!(e instanceof ApiError) || (e.status !== 401 && e.status !== 403)) throw e;
+    }
+  }
   return requestWindows<ComboErp[]>('/erpconsultas/composicoes');
+}
+
+export async function listarErpTabPreco(token?: string | null) {
+  const bearer = token?.trim();
+  if (bearer) {
+    try {
+      return await requestJwt<ComboErp[]>('/erpconsultas/tab-preco', bearer);
+    } catch (e) {
+      if (!(e instanceof ApiError) || (e.status !== 401 && e.status !== 403)) throw e;
+    }
+  }
+  return requestWindows<ComboErp[]>('/erpconsultas/tab-preco');
 }
 
 export async function listarErpGrades() {
@@ -702,6 +721,10 @@ export async function listarErpRedesLojas() {
 
 export async function listarErpUnidades() {
   return requestWindows<ComboErp[]>('/erpconsultas/unidades');
+}
+
+export async function listarErpTipoItem() {
+  return requestWindows<ComboErp[]>('/erpconsultas/tipo-item');
 }
 
 export async function criarAcessoFornecedor(payload: {

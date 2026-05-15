@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Layout } from './Layout';
-import { ArrowLeft, Package, FileText, Palette, DollarSign, Camera, Barcode, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Package, FileText, Palette, DollarSign, Camera, Barcode, Plus, Trash2, Scale } from 'lucide-react';
 import { toast } from 'sonner';
 import { getAuthSession } from '../lib/auth-storage';
 import {
@@ -12,12 +12,13 @@ import {
   listarErpComposicoes,
   listarErpFabricantes,
   listarErpGrades,
+  listarErpTabPreco,
   type ComboErp,
   type ProdutoCadastroDetalhe,
   type ProdutoPreCadastroPayload,
 } from '../lib/supplier-api';
 import { loadProdutoPreCadastroSnapshot, saveProdutoPreCadastroSnapshot } from '../lib/produto-precadastro-snapshot';
-import { resolveFabricanteCodigoErpSalvo } from '../lib/erp-produto-integracao';
+import { resolveCodigoDescricaoComboSalvo, resolveFabricanteCodigoErpSalvo } from '../lib/erp-produto-integracao';
 import { Combobox, type ComboboxOption } from './ui/combobox';
 
 interface Cor {
@@ -56,6 +57,17 @@ const comboErpToOptions = (items: ComboErp[]): ComboboxOption[] =>
       label: (x.descricao?.toString() ?? String(x.codigo)).trim() || String(x.codigo).trim(),
     }));
 
+/** Combo ERP com código gravado e rótulo «código — descrição». */
+const comboErpCodigoDescricaoToOptions = (items: ComboErp[]): ComboboxOption[] =>
+  (items ?? [])
+    .filter((x) => (x?.codigo ?? '').toString().trim().length > 0)
+    .map((x) => {
+      const codigo = String(x.codigo).trim();
+      const descricao = (x.descricao?.toString() ?? '').trim();
+      const label = descricao ? `${codigo} — ${descricao}` : codigo;
+      return { value: codigo, label };
+    });
+
 function mergeCustomErpOption(options: ComboboxOption[], current: string): ComboboxOption[] {
   const t = current.trim();
   if (!t) return options;
@@ -69,6 +81,15 @@ function comboboxValueFromStored(raw: string, options: ComboboxOption[]): string
   if (options.some((o) => o.value === t)) return t;
   const byLabel = options.find((o) => o.label === t);
   if (byLabel) return byLabel.value;
+  const byCodigoOuDescricao = options.find((o) => {
+    const sep = ' — ';
+    const idx = o.label.indexOf(sep);
+    if (idx < 0) return false;
+    const codigo = o.label.slice(0, idx);
+    const descricao = o.label.slice(idx + sep.length);
+    return codigo === t || descricao === t;
+  });
+  if (byCodigoOuDescricao) return byCodigoOuDescricao.value;
   return t;
 }
 
@@ -83,6 +104,9 @@ interface ProdutoFormData {
   referFabricante: string;
   fabricante: string;
   composicao: string;
+  cest: string;
+  tributOrigem: string;
+  classificacaoFiscalFinal: string;
   obsFornecedor: string;
   subColecao: string;
   tamCentimetros: string;
@@ -107,7 +131,7 @@ interface ProdutoFormData {
 
 type ProdutoCadastroMode = 'create' | 'edit';
 
-function toPayload(formData: ProdutoFormData): ProdutoPreCadastroPayload {
+function toPayload(formData: ProdutoFormData, tabPrecoOpts: ComboboxOption[] = []): ProdutoPreCadastroPayload {
   const pesoNumber = Number(formData.peso.replace(',', '.'));
   return {
     descProduto: formData.descProduto,
@@ -115,6 +139,11 @@ function toPayload(formData: ProdutoFormData): ProdutoPreCadastroPayload {
     referFabricante: formData.referFabricante || null,
     fabricante: formData.fabricante || null,
     composicao: formData.composicao || null,
+    cest: formData.cest.trim().length ? formData.cest.trim() : null,
+    tributOrigem: formData.tributOrigem.trim().length ? formData.tributOrigem.trim() : null,
+    classificacaoFiscalFinal: formData.classificacaoFiscalFinal.trim().length
+      ? formData.classificacaoFiscalFinal.trim()
+      : null,
     obsFornecedor: formData.obsFornecedor || null,
     subColecao: formData.subColecao || null,
     tamCentimetros: formData.tamCentimetros || null,
@@ -139,7 +168,7 @@ function toPayload(formData: ProdutoFormData): ProdutoPreCadastroPayload {
       ncm: c.ncm.trim().length ? c.ncm : null,
     })),
     precos: formData.precos.map((p) => ({
-      codigoTabelaPreco: p.codigoTabelaPreco,
+      codigoTabelaPreco: resolveCodigoDescricaoComboSalvo(p.codigoTabelaPreco, tabPrecoOpts),
       preco: p.preco,
     })),
     fotos: formData.fotos.map((f) => ({
@@ -185,6 +214,12 @@ function detalheToFormData(produto: ProdutoCadastroDetalhe, snapshot: ProdutoPre
     referFabricante: produto.referFabricante ?? '',
     fabricante: pickFirstNonEmpty(produto.fabricante, snap?.fabricante ?? undefined),
     composicao: pickFirstNonEmpty(produto.composicao, snap?.composicao ?? undefined),
+    cest: pickFirstNonEmpty(produto.cest, snap?.cest ?? undefined),
+    tributOrigem: pickFirstNonEmpty(produto.tributOrigem, snap?.tributOrigem ?? undefined),
+    classificacaoFiscalFinal: pickFirstNonEmpty(
+      produto.classificacaoFiscalFinal,
+      snap?.classificacaoFiscalFinal ?? undefined,
+    ),
     obsFornecedor: pickFirstNonEmpty(produto.obsFornecedor, snap?.obsFornecedor ?? undefined),
     subColecao: pickFirstNonEmpty(produto.subColecao, snap?.subColecao ?? undefined),
     tamCentimetros: pickFirstNonEmpty(produto.tamCentimetros, snap?.tamCentimetros ?? undefined),
@@ -254,6 +289,9 @@ export function ProdutoCadastro({
     referFabricante: '',
     fabricante: '',
     composicao: '',
+    cest: '',
+    tributOrigem: '',
+    classificacaoFiscalFinal: '',
     obsFornecedor: '',
     subColecao: '',
     tamCentimetros: '',
@@ -284,34 +322,51 @@ export function ProdutoCadastro({
   const [composicaoOptions, setComposicaoOptions] = useState<ComboboxOption[]>([]);
   const [colecaoOptions, setColecaoOptions] = useState<ComboboxOption[]>([]);
   const [gradeOptions, setGradeOptions] = useState<ComboboxOption[]>([]);
+  const [tabPrecoOptions, setTabPrecoOptions] = useState<ComboboxOption[]>([]);
 
   useEffect(() => {
     let cancelled = false;
 
     const loadCombos = async () => {
       setLoadingCombos(true);
-      try {
-        const [fabricantes, composicoes, colecoes, grades] = await Promise.all([
+      const token = getAuthSession()?.token ?? null;
+
+      const [fabricantesResult, composicoesResult, colecoesResult, gradesResult, tabPrecoResult] =
+        await Promise.allSettled([
           listarErpFabricantes(),
-          listarErpComposicoes(),
+          listarErpComposicoes(token),
           listarErpColecoes(),
           listarErpGrades(),
+          listarErpTabPreco(token),
         ]);
-        if (cancelled) return;
-        setFabricanteOptions(comboErpToOptions(fabricantes));
-        setComposicaoOptions(comboErpToOptions(composicoes));
-        setColecaoOptions(comboErpToOptions(colecoes));
-        setGradeOptions(comboErpToOptions(grades));
-        setCombosDisponiveis(true);
-      } catch {
-        if (!cancelled) {
-          setCombosDisponiveis(false);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingCombos(false);
-        }
+
+      if (cancelled) return;
+
+      let anyCombo = false;
+
+      if (fabricantesResult.status === 'fulfilled') {
+        setFabricanteOptions(comboErpToOptions(fabricantesResult.value));
+        anyCombo = true;
       }
+      if (composicoesResult.status === 'fulfilled') {
+        setComposicaoOptions(comboErpCodigoDescricaoToOptions(composicoesResult.value));
+        anyCombo = true;
+      }
+      if (colecoesResult.status === 'fulfilled') {
+        setColecaoOptions(comboErpToOptions(colecoesResult.value));
+        anyCombo = true;
+      }
+      if (gradesResult.status === 'fulfilled') {
+        setGradeOptions(comboErpToOptions(gradesResult.value));
+        anyCombo = true;
+      }
+      if (tabPrecoResult.status === 'fulfilled') {
+        setTabPrecoOptions(comboErpCodigoDescricaoToOptions(tabPrecoResult.value));
+        anyCombo = true;
+      }
+
+      setCombosDisponiveis(anyCombo);
+      setLoadingCombos(false);
     };
 
     void loadCombos();
@@ -327,6 +382,20 @@ export function ProdutoCadastro({
       return r === prev.fabricante ? prev : { ...prev, fabricante: r };
     });
   }, [combosDisponiveis, fabricanteOptions]);
+
+  useEffect(() => {
+    if (!tabPrecoOptions.length) return;
+    setFormData((prev) => {
+      let changed = false;
+      const precos = prev.precos.map((p) => {
+        const cod = resolveCodigoDescricaoComboSalvo(p.codigoTabelaPreco, tabPrecoOptions);
+        if (cod === p.codigoTabelaPreco) return p;
+        changed = true;
+        return { ...p, codigoTabelaPreco: cod };
+      });
+      return changed ? { ...prev, precos } : prev;
+    });
+  }, [tabPrecoOptions]);
 
   const fabricanteOpts = useMemo(
     () => mergeCustomErpOption(fabricanteOptions, formData.fabricante),
@@ -388,7 +457,11 @@ export function ProdutoCadastro({
 
   const handlePrecoChange = (index: number, field: keyof Preco, value: string | number) => {
     const newPrecos = [...formData.precos];
-    newPrecos[index] = { ...newPrecos[index], [field]: value };
+    const next =
+      field === 'codigoTabelaPreco' && typeof value === 'string'
+        ? resolveCodigoDescricaoComboSalvo(value, tabPrecoOptions)
+        : value;
+    newPrecos[index] = { ...newPrecos[index], [field]: next };
     setFormData({ ...formData, precos: newPrecos });
   };
 
@@ -475,7 +548,7 @@ export function ProdutoCadastro({
     setIsSubmitting(true);
 
     try {
-      const payload = toPayload(formData);
+      const payload = toPayload(formData, tabPrecoOptions);
 
       if (mode === 'edit') {
         if (!produtoId) {
@@ -692,13 +765,13 @@ export function ProdutoCadastro({
                   <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
                     Composição
                   </label>
-                  {combosDisponiveis && composicaoOpts.length > 0 ? (
+                  {composicaoOpts.length > 0 ? (
                     <Combobox
                       value={comboboxValueFromStored(formData.composicao, composicaoOpts)}
                       options={composicaoOpts}
                       onChange={(val) => handleChange('composicao', val ?? '')}
                       placeholder={loadingCombos ? 'Carregando...' : 'Selecione a composição no ERP'}
-                      searchPlaceholder="Buscar composição..."
+                      searchPlaceholder="Buscar por código ou descrição..."
                       disabled={isReadOnly || loadingCombos}
                       buttonClassName={erpComboButtonClass}
                       className="bg-white/10 backdrop-blur-xl border-white/20"
@@ -708,15 +781,19 @@ export function ProdutoCadastro({
                       type="text"
                       value={formData.composicao}
                       onChange={(e) => handleChange('composicao', e.target.value)}
-                      placeholder="Código de composição (MATERIAIS_COMPOSICAO)"
-                      disabled={isReadOnly}
+                      placeholder={
+                        loadingCombos
+                          ? 'Carregando composições do ERP...'
+                          : 'Código de composição (MATERIAIS_COMPOSICAO)'
+                      }
+                      disabled={isReadOnly || loadingCombos}
                       className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
                       style={{ fontFamily: 'Outfit, sans-serif' }}
                     />
                   )}
-                  {combosDisponiveis && composicaoOpts.length > 0 && (
+                  {composicaoOpts.length > 0 && (
                     <p className="text-white/50 text-xs mt-1.5" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                      Código gravado conforme cadastro no ERP.
+                      Lista do ERP (MATERIAIS_COMPOSICAO). O código é gravado; busque por código ou descrição.
                     </p>
                   )}
                 </div>
@@ -919,6 +996,59 @@ export function ProdutoCadastro({
             </div>
 
             <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+              <div className="flex items-center gap-3 mb-6">
+                <Scale className="w-6 h-6 text-white" />
+                <h2 className="text-2xl font-bold text-white" style={{ fontFamily: 'Playfair Display, serif' }}>
+                  Informações Fiscais
+                </h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    CEST
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.cest}
+                    onChange={(e) => handleChange('cest', e.target.value)}
+                    placeholder="Código CEST"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Tribut. Origem
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.tributOrigem}
+                    onChange={(e) => handleChange('tributOrigem', e.target.value)}
+                    placeholder="Tributação de origem"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-white/90 mb-2" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 400 }}>
+                    Classificação Fiscal Final
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.classificacaoFiscalFinal}
+                    onChange={(e) => handleChange('classificacaoFiscalFinal', e.target.value)}
+                    placeholder="Classificação fiscal"
+                    disabled={isReadOnly}
+                    className="w-full px-4 py-3 bg-white/20 backdrop-blur-sm border border-white/30 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-white/60 focus:bg-white/25 transition-all duration-300"
+                    style={{ fontFamily: 'Outfit, sans-serif' }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-3">
                   <Palette className="w-6 h-6 text-white" />
@@ -1060,7 +1190,9 @@ export function ProdutoCadastro({
                 </p>
               ) : (
                 <div className="space-y-4">
-                  {formData.precos.map((preco, index) => (
+                  {formData.precos.map((preco, index) => {
+                    const tabPrecoOpts = mergeCustomErpOption(tabPrecoOptions, preco.codigoTabelaPreco);
+                    return (
                     <div key={index} className="bg-white/5 rounded-xl p-5 border border-white/10">
                       <div className="flex items-center justify-between mb-4">
                         <span className="text-white font-medium" style={{ fontFamily: 'Outfit, sans-serif' }}>
@@ -1075,17 +1207,43 @@ export function ProdutoCadastro({
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
-                            Código Tabela de Preço
+                            Tabela de Preço
                           </label>
-                          <input
-                            type="text"
-                            value={preco.codigoTabelaPreco}
-                            onChange={(e) => handlePrecoChange(index, 'codigoTabelaPreco', e.target.value)}
-                            placeholder="Ex: TAB001"
-                            disabled={isReadOnly}
-                            className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
-                            style={{ fontFamily: 'Outfit, sans-serif' }}
-                          />
+                          {tabPrecoOpts.length > 0 ? (
+                            <Combobox
+                              value={comboboxValueFromStored(preco.codigoTabelaPreco, tabPrecoOpts)}
+                              options={tabPrecoOpts}
+                              onChange={(val) =>
+                                handlePrecoChange(
+                                  index,
+                                  'codigoTabelaPreco',
+                                  resolveCodigoDescricaoComboSalvo(val ?? '', tabPrecoOpts),
+                                )
+                              }
+                              placeholder={loadingCombos ? 'Carregando...' : 'Selecione a tabela no ERP'}
+                              searchPlaceholder="Buscar por código ou descrição..."
+                              disabled={isReadOnly || loadingCombos}
+                              buttonClassName={erpComboButtonClassSm}
+                              className="bg-white/10 backdrop-blur-xl border-white/20"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={preco.codigoTabelaPreco}
+                              onChange={(e) => handlePrecoChange(index, 'codigoTabelaPreco', e.target.value)}
+                              placeholder={
+                                loadingCombos ? 'Carregando tabelas do ERP...' : 'Código da tabela de preço'
+                              }
+                              disabled={isReadOnly || loadingCombos}
+                              className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm placeholder-white/40 focus:outline-none focus:border-white/60"
+                              style={{ fontFamily: 'Outfit, sans-serif' }}
+                            />
+                          )}
+                          {tabPrecoOpts.length > 0 && (
+                            <p className="text-white/50 text-xs mt-1" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                              O código da tabela é gravado; busque por código ou descrição.
+                            </p>
+                          )}
                         </div>
                         <div>
                           <label className="block text-white/80 text-sm mb-2" style={{ fontFamily: 'Outfit, sans-serif' }}>
@@ -1104,7 +1262,8 @@ export function ProdutoCadastro({
                         </div>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

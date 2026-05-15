@@ -29,3 +29,31 @@ export function resolveFabricanteCodigoErpSalvo(
   });
   return byCodFornecedor?.value ?? s;
 }
+
+/** Combo ERP «código — descrição»: persiste somente o código. */
+export function resolveCodigoDescricaoComboSalvo(
+  raw: string,
+  options: { value: string; label: string }[],
+): string {
+  const s = raw.trim();
+  if (!s) return '';
+  if (options.some((o) => o.value === s)) return s;
+  const byLabel = options.find((o) => o.label === s);
+  if (byLabel) return byLabel.value;
+  const sep = ' — ';
+  const byCodigoOuDescricao = options.find((o) => {
+    const idx = o.label.indexOf(sep);
+    if (idx < 0) return o.label === s;
+    const codigo = o.label.slice(0, idx);
+    const descricao = o.label.slice(idx + sep.length);
+    return codigo === s || descricao === s;
+  });
+  if (byCodigoOuDescricao) return byCodigoOuDescricao.value;
+  const m = s.match(/^([^—\-–]+?)\s*[—\-–]/);
+  if (m) {
+    const cod = m[1].trim();
+    if (options.some((o) => o.value === cod)) return cod;
+    return cod;
+  }
+  return s;
+}
